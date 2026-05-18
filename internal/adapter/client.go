@@ -70,6 +70,41 @@ type Client struct {
 	open bool
 
 	wmu sync.Mutex // serialises WS writers (one frame at a time)
+
+	// peersSink, when non-nil, receives the names from any peers-reply
+	// frame the single Recv reader observes. It exists so a mode that runs
+	// the resume loop as the SOLE connection reader (the generic adapter)
+	// can still implement bus.peers without a SECOND concurrent reader on
+	// the same WS (two readers split frames and deadlock). The reconnect
+	// loop is the only reader; this routes the out-of-band peers reply back
+	// to a waiting RequestPeers caller. Best-effort, non-blocking send.
+	psMu      sync.Mutex
+	peersSink chan<- []string
+}
+
+// SetPeersSink installs (or clears, with nil) the channel the Recv loop
+// forwards peers-reply names to. Used by the generic adapter so RequestPeers
+// can get a reply without opening a competing reader on the WS.
+func (c *Client) SetPeersSink(ch chan<- []string) {
+	c.psMu.Lock()
+	c.peersSink = ch
+	c.psMu.Unlock()
+}
+
+// RequestPeers writes a peers control frame WITHOUT reading the reply (the
+// resume loop is the sole reader and forwards the reply via the peers
+// sink). Use this — not Peers — whenever a Recv loop is concurrently
+// pumping the same connection.
+func (c *Client) RequestPeers(ctx context.Context) error {
+	ws := c.conn()
+	if ws == nil {
+		return ErrNotConnected
+	}
+	req := wire.Peers{ProtocolVersion: wire.ProtocolVersion, Type: wire.ControlPeers}
+	if err := writeJSON(ctx, ws, &c.wmu, req); err != nil {
+		return fmt.Errorf("adapter: peers request write: %w", err)
+	}
+	return nil
 }
 
 // NewClient constructs a Client over cfg. It does not dial; call Connect.
@@ -261,7 +296,13 @@ func (c *Client) Recv(ctx context.Context) (wire.Envelope, error) {
 		}
 		ct, _ := wire.ControlTypeOf(data)
 		if ct != wire.ControlDeliver {
-			// peers reply / other control noise — not a delivery.
+			// Not a delivery. If it is a peers reply and a sink is
+			// installed, forward the names to whoever is waiting in
+			// RequestPeers (best-effort, non-blocking) — this is how the
+			// generic adapter does bus.peers without a second reader.
+			if ct == wire.ControlPeers {
+				c.forwardPeers(data)
+			}
 			continue
 		}
 		var del wire.Deliver
@@ -297,6 +338,26 @@ func (c *Client) Ack(ctx context.Context, id string) error {
 		return fmt.Errorf("adapter: ack write: %w", err)
 	}
 	return nil
+}
+
+// forwardPeers decodes a peers-reply frame and delivers its names to the
+// installed sink without blocking the Recv loop (a slow/absent reader must
+// not stall delivery pumping).
+func (c *Client) forwardPeers(data []byte) {
+	c.psMu.Lock()
+	sink := c.peersSink
+	c.psMu.Unlock()
+	if sink == nil {
+		return
+	}
+	var p wire.Peers
+	if err := json.Unmarshal(data, &p); err != nil {
+		return
+	}
+	select {
+	case sink <- p.Names:
+	default:
+	}
 }
 
 // writeJSON marshals v and writes it as one WS text message, serialised by
