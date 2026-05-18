@@ -486,59 +486,75 @@ func TestParity_DirectMessage(t *testing.T) {
 // copy each) and NOT to the sender — the cc2cc broadcast ergonomic with the
 // locked no-self / no-backfill model.
 //
-// Recipients are raw broker clients (not generic buses): the broker rewrites
-// the signed id/to per recipient on fan-out (router.go: copyEnv.ID =
-// env.ID+"|"+r), so each per-recipient copy fails end-to-end HMAC by design
-// — the generic bus loop logs+skips HMAC-failed broadcast copies (documented
-// limitation, same as internal/mcp's TestBusBroadcastFansOut). Asserting on
-// the raw Client.Recv outcome is the authoritative way to observe the
-// fan-out + sender-exclusion guarantee independent of that documented
-// broadcast-HMAC limitation.
+// This asserts the REAL end-to-end contract (CRITICAL-2): a real generic
+// bus recipient actually receives + surfaces the broadcast with the correct
+// body, and a raw client recipient verifies the broadcast end-to-end
+// (the broker delivers the sender's verbatim signed envelope; the
+// per-recipient row key rides on wire.Deliver.DeliveryKey, outside the
+// HMAC). The sender is excluded.
 func TestParity_BroadcastFanOutSenderExcluded(t *testing.T) {
 	f := newBrokerFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	r1 := f.rawClient(ctx, "r1")
-	defer r1.Close()
-	r2 := f.rawClient(ctx, "r2")
-	defer r2.Close()
+	// Real generic-bus recipient — must SURFACE the broadcast via drain.
+	rxBus := newGenericPeer(t, f, "rxbus")
+	// Raw client recipient — lets us assert the verbatim signed envelope
+	// and end-to-end HMAC + per-recipient DeliveryKey directly.
+	rxRaw := f.rawClient(ctx, "rxraw")
+	defer rxRaw.Close()
 
 	caster := newGenericPeer(t, f, "caster")
 	if err := caster.bus.Broadcast(ctx, json.RawMessage(`{"announce":1}`)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
 
-	// Each non-sender receives its own per-recipient copy. The broker
-	// rewrote the signed id/to, so Recv reports ErrInboundHMAC — but it
-	// still returns the carried envelope (from=caster), proving the fan-out
-	// copy reached this recipient.
-	for _, rp := range []struct {
-		name string
-		c    *adapter.Client
-	}{{"r1", r1}, {"r2", r2}} {
-		env, rerr := rp.c.Recv(ctx)
-		if rerr != nil && !strings.Contains(rerr.Error(), "failed HMAC verify") {
-			t.Fatalf("%s broadcast recv error = %v, want delivery or HMAC rejection", rp.name, rerr)
-		}
-		if env.From != "caster" {
-			t.Fatalf("%s broadcast copy from = %q, want caster", rp.name, env.From)
-		}
-		if env.To != rp.name {
-			t.Fatalf("%s broadcast copy to = %q, want per-recipient %q", rp.name, env.To, rp.name)
+	// (1) The real generic bus actually receives + surfaces the broadcast.
+	msgs := rxBus.drainUntil(ctx, 5*time.Second)
+	if len(msgs) == 0 {
+		t.Fatalf("real generic bus received NO broadcast — broadcast broken end-to-end")
+	}
+	found := false
+	for _, m := range msgs {
+		if m.From == "caster" && string(m.Body) == `{"announce":1}` {
+			found = true
 		}
 	}
+	if !found {
+		t.Fatalf("real generic bus did not surface the broadcast body; got %+v", msgs)
+	}
 
-	// The sender is EXCLUDED — the broker queued no broadcast copy for
-	// "caster". Re-binding "caster" with a raw client (same-token takeover)
-	// and draining must surface nothing: no pending copy means Recv blocks
-	// until the short timeout, not a delivery.
+	// (2) The raw recipient gets the sender's VERBATIM signed envelope
+	// (to:"*", original id) and it verifies end-to-end; the per-recipient
+	// row key is carried on DeliveryKey, outside the HMAC.
+	del, rerr := rxRaw.Recv(ctx)
+	if rerr != nil {
+		t.Fatalf("raw recipient broadcast not delivered / failed HMAC: %v", rerr)
+	}
+	env := del.Envelope
+	if env.From != "caster" || env.To != "*" {
+		t.Fatalf("broadcast envelope = from %q to %q, want from=caster to=* (verbatim signed)", env.From, env.To)
+	}
+	if del.DeliveryKey == "" || del.DeliveryKey == env.ID {
+		t.Fatalf("broadcast delivery_key = %q, want per-recipient key != signed id %q", del.DeliveryKey, env.ID)
+	}
+	if err := hmacpkg.VerifyEnvelope(testSecret, env); err != nil {
+		t.Fatalf("broadcast copy not end-to-end HMAC-verifiable: %v", err)
+	}
+	if string(env.Body) != `{"announce":1}` {
+		t.Fatalf("broadcast body = %s, want {\"announce\":1}", env.Body)
+	}
+
+	// (3) The sender is EXCLUDED — re-binding "caster" with a raw client
+	// and reading must surface nothing (no pending broadcast copy for the
+	// sender), so Recv times out rather than returning a delivery.
 	selfRaw := f.rawClient(ctx, "caster")
 	defer selfRaw.Close()
 	recvCtx, recvCancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer recvCancel()
-	if env, err := selfRaw.Recv(recvCtx); err == nil {
-		t.Fatalf("sender received its own broadcast (id=%s from=%s) — fan-out exclusion broken", env.ID, env.From)
+	if d, err := selfRaw.Recv(recvCtx); err == nil {
+		t.Fatalf("sender received its own broadcast (id=%s from=%s) — fan-out exclusion broken",
+			d.Envelope.ID, d.Envelope.From)
 	}
 }
 
@@ -565,10 +581,11 @@ func TestParity_HMACSignedDeliversAndForgedRejected(t *testing.T) {
 	if err := good.Send(ctx, "ok-1", "rx", "ts", "peer-bus", json.RawMessage(`{"ok":true}`)); err != nil {
 		t.Fatalf("good send: %v", err)
 	}
-	env, err := rx.Recv(ctx)
+	del, err := rx.Recv(ctx)
 	if err != nil {
 		t.Fatalf("valid signed message must verify+deliver, got %v", err)
 	}
+	env := del.Envelope
 	if env.From != "good" || string(env.Body) != `{"ok":true}` {
 		t.Fatalf("delivered env = %+v, want from=good body={\"ok\":true}", env)
 	}

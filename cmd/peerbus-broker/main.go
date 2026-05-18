@@ -2,8 +2,8 @@
 //
 // Subcommands:
 //
-//	serve         start the WebSocket broker (Task 7 core: token auth + peer
-//	              registry; routing lands in Task 8)
+//	serve         start the WebSocket broker (token auth + peer registry +
+//	              direct/broadcast routing, offline queue, ack/redelivery)
 //	audit verify  walk the blake3 hash-chain audit log and report any break
 //
 // Configuration for `serve` is loaded via internal/broker.LoadConfig

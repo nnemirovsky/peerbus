@@ -31,7 +31,7 @@ In the project where the Claude session will run:
       "command": "/abs/path/to/peerbus-adapter",
       "args": ["--adapter=cc"],
       "env": {
-        "PEERBUS_BROKER_URL": "ws://BROKER_HOST:PORT",
+        "PEERBUS_URL": "ws://BROKER_HOST:PORT",
         "PEERBUS_TOKEN": "THE_BEARER_TOKEN",
         "PEERBUS_HMAC_SECRET": "THE_SHARED_SECRET"
       }

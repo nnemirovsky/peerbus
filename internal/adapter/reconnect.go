@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"sync/atomic"
 	"time"
 
 	"github.com/nnemirovsky/peerbus/internal/wire"
@@ -52,7 +53,14 @@ type ResumingClient struct {
 	dedupe *Dedupe
 	rng    *rand.Rand
 
-	cur *Client // the current live Client (replaced on each reconnect)
+	// cur is the current live Client, replaced on each reconnect. It is an
+	// atomic.Pointer so Client() (called from outbound send/broadcast/peers
+	// on the host's goroutine) and connect() (the resume loop's goroutine)
+	// have a happens-before edge: connect fully constructs the *Client then
+	// publishes it with a single atomic Store; Client() observes either the
+	// previous fully-constructed pointer or the new one, never a torn or
+	// partially-published value. (CRITICAL-3 data-race fix.)
+	cur atomic.Pointer[Client]
 }
 
 // NewResumingClient builds a ResumingClient. dedupeSize bounds the shared
@@ -75,7 +83,7 @@ func (rc *ResumingClient) Dedupe() *Dedupe { return rc.dedupe }
 // Client returns the current live underlying Client (for outbound
 // send/broadcast/peers). It may be nil between a drop and a successful
 // redial; callers should treat ErrNotConnected as transient.
-func (rc *ResumingClient) Client() *Client { return rc.cur }
+func (rc *ResumingClient) Client() *Client { return rc.cur.Load() }
 
 // connect (re)establishes a live Client with bounded backoff, returning
 // once connected or when ctx is done.
@@ -85,7 +93,9 @@ func (rc *ResumingClient) connect(ctx context.Context) (*Client, error) {
 		c := NewClient(rc.cfg)
 		err := c.Connect(ctx)
 		if err == nil {
-			rc.cur = c
+			// Publish the fully-constructed, connected Client with a single
+			// atomic Store (happens-before for any concurrent Client()).
+			rc.cur.Store(c)
 			return c, nil
 		}
 		if ctx.Err() != nil {
@@ -113,11 +123,25 @@ func (rc *ResumingClient) connect(ctx context.Context) (*Client, error) {
 // acking clears it from the broker's unacked set so it stops being
 // redelivered. A handler error leaves the message unacked (redelivered +
 // re-deduped next reconnect).
-func (rc *ResumingClient) surface(ctx context.Context, c *Client, h HandlerFunc, env wire.Envelope) {
+// surface runs one delivery through dedupe then (if new) the handler.
+//
+// Dedupe keys off the SIGNED envelope id (del.Envelope.ID): that is the
+// stable per-message identity the host must see exactly once. For a
+// broadcast every recipient gets the same original envelope id (the broker
+// no longer rewrites it), so a recipient's own redelivery is correctly
+// suppressed while distinct broadcasts still pass.
+//
+// Ack keys off the broker's per-recipient DeliveryKey (del.DeliveryKey):
+// that is the durable row the broker tracks as unacked/redeliverable. For
+// a direct message DeliveryKey == Envelope.ID; for a broadcast copy it is
+// "<origID>|<recipient>". Acking by envelope id would never clear a
+// broadcast row and the message would redeliver forever.
+func (rc *ResumingClient) surface(ctx context.Context, c *Client, h HandlerFunc, del wire.Deliver) {
+	env := del.Envelope
 	if rc.dedupe.Seen(env.ID) {
 		// Already surfaced to the host on an earlier delivery; just
-		// (re)ack so the broker stops redelivering it.
-		_ = c.Ack(ctx, env.ID)
+		// (re)ack the per-recipient row so the broker stops redelivering.
+		_ = c.Ack(ctx, del.DeliveryKey)
 		return
 	}
 	if err := h(ctx, env); err != nil {
@@ -129,8 +153,8 @@ func (rc *ResumingClient) surface(ctx context.Context, c *Client, h HandlerFunc,
 		rc.dedupe.forget(env.ID)
 		return
 	}
-	// Consumed — ack only now (consume-then-ack).
-	_ = c.Ack(ctx, env.ID)
+	// Consumed — ack the per-recipient row only now (consume-then-ack).
+	_ = c.Ack(ctx, del.DeliveryKey)
 }
 
 // Run connects and pumps inbound deliveries through dedupe+handler until
@@ -145,7 +169,7 @@ func (rc *ResumingClient) Run(ctx context.Context, h HandlerFunc) error {
 		}
 		// Pump this connection until it drops.
 		for {
-			env, rerr := c.Recv(ctx)
+			del, rerr := c.Recv(ctx)
 			if rerr != nil {
 				if errors.Is(rerr, ErrInboundHMAC) {
 					// Forged/corrupt inbound: drop it, keep pumping the
@@ -157,7 +181,7 @@ func (rc *ResumingClient) Run(ctx context.Context, h HandlerFunc) error {
 				// the outer loop to redial + re-register (resume).
 				break
 			}
-			rc.surface(ctx, c, h, env)
+			rc.surface(ctx, c, h, del)
 		}
 		c.Close()
 		if ctx.Err() != nil {

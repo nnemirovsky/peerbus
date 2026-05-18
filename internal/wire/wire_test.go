@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,39 @@ import (
 	"strings"
 	"testing"
 )
+
+// ndjsonWrite marshals v and appends it as one newline-terminated line —
+// the production WS transport frames each object itself (one JSON object
+// per WS message); these helpers reproduce that framing in-test without a
+// dedicated codec type.
+func ndjsonWrite(buf *bytes.Buffer, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	buf.Write(b)
+	buf.WriteByte('\n')
+	return nil
+}
+
+// ndjsonReader reads newline-delimited JSON objects from r.
+type ndjsonReader struct{ sc *bufio.Scanner }
+
+func newNDJSONReader(r io.Reader) *ndjsonReader {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	return &ndjsonReader{sc: sc}
+}
+
+func (d *ndjsonReader) next(v any) error {
+	if !d.sc.Scan() {
+		if err := d.sc.Err(); err != nil {
+			return err
+		}
+		return io.EOF
+	}
+	return json.Unmarshal(d.sc.Bytes(), v)
+}
 
 func sampleEnvelope() Envelope {
 	return Envelope{
@@ -26,14 +60,14 @@ func sampleEnvelope() Envelope {
 func TestEnvelopeRoundTrip(t *testing.T) {
 	in := sampleEnvelope()
 	var buf bytes.Buffer
-	if err := NewEncoder(&buf).Encode(in); err != nil {
+	if err := ndjsonWrite(&buf, in); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 	if !strings.HasSuffix(buf.String(), "\n") {
 		t.Fatalf("encoded frame must be newline-terminated")
 	}
 	var out Envelope
-	if err := NewDecoder(&buf).Decode(&out); err != nil {
+	if err := newNDJSONReader(&buf).next(&out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if out.ID != in.ID || out.From != in.From || out.To != in.To ||
@@ -48,28 +82,27 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 
 func TestMultipleFramesPerStream(t *testing.T) {
 	var buf bytes.Buffer
-	enc := NewEncoder(&buf)
 	a := sampleEnvelope()
 	b := sampleEnvelope()
 	b.ID = "01HV000000000000000000000B"
-	if err := enc.Encode(a); err != nil {
+	if err := ndjsonWrite(&buf, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := enc.Encode(b); err != nil {
+	if err := ndjsonWrite(&buf, b); err != nil {
 		t.Fatal(err)
 	}
-	dec := NewDecoder(&buf)
+	dec := newNDJSONReader(&buf)
 	var x, y Envelope
-	if err := dec.Decode(&x); err != nil {
+	if err := dec.next(&x); err != nil {
 		t.Fatal(err)
 	}
-	if err := dec.Decode(&y); err != nil {
+	if err := dec.next(&y); err != nil {
 		t.Fatal(err)
 	}
 	if x.ID != a.ID || y.ID != b.ID {
 		t.Fatalf("frame order/identity wrong: %q %q", x.ID, y.ID)
 	}
-	if err := dec.Decode(&Envelope{}); !errors.Is(err, io.EOF) {
+	if err := dec.next(&Envelope{}); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected io.EOF after last frame, got %v", err)
 	}
 }
@@ -88,7 +121,7 @@ func TestControlRoundTrip(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			if err := NewEncoder(&buf).Encode(tc.msg); err != nil {
+			if err := ndjsonWrite(&buf, tc.msg); err != nil {
 				t.Fatalf("encode: %v", err)
 			}
 			line := bytes.TrimRight(buf.Bytes(), "\n")
@@ -102,7 +135,7 @@ func TestControlRoundTrip(t *testing.T) {
 			switch tc.typ {
 			case ControlRegister:
 				var r Register
-				if err := NewDecoder(&buf).Decode(&r); err != nil {
+				if err := newNDJSONReader(&buf).next(&r); err != nil {
 					t.Fatal(err)
 				}
 				if r.Name != "alice" || r.Token != "tok" {
@@ -110,7 +143,7 @@ func TestControlRoundTrip(t *testing.T) {
 				}
 			case ControlAck:
 				var a Ack
-				if err := NewDecoder(&buf).Decode(&a); err != nil {
+				if err := newNDJSONReader(&buf).next(&a); err != nil {
 					t.Fatal(err)
 				}
 				if a.ID != "id-1" {
@@ -118,7 +151,7 @@ func TestControlRoundTrip(t *testing.T) {
 				}
 			case ControlPeers:
 				var p Peers
-				if err := NewDecoder(&buf).Decode(&p); err != nil {
+				if err := newNDJSONReader(&buf).next(&p); err != nil {
 					t.Fatal(err)
 				}
 				if len(p.Names) != 2 {
@@ -126,7 +159,7 @@ func TestControlRoundTrip(t *testing.T) {
 				}
 			case ControlDeliver:
 				var d Deliver
-				if err := NewDecoder(&buf).Decode(&d); err != nil {
+				if err := newNDJSONReader(&buf).next(&d); err != nil {
 					t.Fatal(err)
 				}
 				if d.Envelope.ID != sampleEnvelope().ID {
@@ -196,11 +229,11 @@ func TestCanonicalStableAcrossWireRoundTrip(t *testing.T) {
 	senderCanon := mustCanonical(t, env)
 
 	var buf bytes.Buffer
-	if err := NewEncoder(&buf).Encode(env); err != nil {
+	if err := ndjsonWrite(&buf, env); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 	var received Envelope
-	if err := NewDecoder(&buf).Decode(&received); err != nil {
+	if err := newNDJSONReader(&buf).next(&received); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	recipientCanon := mustCanonical(t, received)
@@ -267,7 +300,7 @@ func TestCanonicalEmptyBodyIsNull(t *testing.T) {
 func TestDecodeMalformedLine(t *testing.T) {
 	r := strings.NewReader("{not valid json}\n")
 	var env Envelope
-	if err := NewDecoder(r).Decode(&env); err == nil {
+	if err := newNDJSONReader(r).next(&env); err == nil {
 		t.Fatalf("expected error decoding malformed JSON line")
 	}
 }
@@ -277,7 +310,7 @@ func TestDecodeMissingRequiredFields(t *testing.T) {
 	// zero values; CheckVersion then rejects the (empty) protocol_version.
 	r := strings.NewReader(`{}` + "\n")
 	var env Envelope
-	if err := NewDecoder(r).Decode(&env); err != nil {
+	if err := newNDJSONReader(r).next(&env); err != nil {
 		t.Fatalf("structurally-valid empty object should decode: %v", err)
 	}
 	if err := CheckVersion(env.ProtocolVersion); err == nil {

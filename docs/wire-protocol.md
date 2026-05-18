@@ -129,13 +129,25 @@ Wraps one message envelope being pushed to its recipient. Clients never send
 {
   "protocol_version": "v1",
   "type": "deliver",
+  "delivery_key": "<per-recipient durable row key>",
   "envelope": { ...see §3... }
 }
 ```
 
-On receipt the client MUST: HMAC-verify the envelope (§4), run it through the
-dedupe cache (§5), surface it to the host, then `ack` it (§2.2) once the host
-has consumed it.
+`delivery_key` is the broker's per-recipient durable row key. It is carried
+**outside the signed envelope** (it is NOT part of the HMAC canonical subset,
+§4). For a **direct** message `delivery_key` equals the envelope `id`. For a
+**broadcast** copy it is `"<original-id>|<recipient-name>"` while the
+`envelope` stays **byte-identical to what the sender signed** (`to:"*"`,
+original `id`, original `hmac`). The client **acks by `delivery_key`** (§2.2),
+not by `envelope.id` — that is how each per-recipient broadcast copy is
+independently ackable without mutating (and thus invalidating) the signed
+envelope.
+
+On receipt the client MUST: HMAC-verify the envelope (§4) — which verifies
+for broadcast too, because the envelope is the sender's verbatim signed bytes
+— run it through the dedupe cache keyed on `envelope.id` (§5), surface it to
+the host, then `ack` the `delivery_key` (§2.2) once the host has consumed it.
 
 ## 3. Message envelope
 
@@ -193,14 +205,15 @@ by the HMAC).
   at all → dropped. A known-but-currently-offline peer → queued. A re-sent
   duplicate `id` → benign no-op (the original row stands).
 - **Broadcast (`to:*`):** the broker fans out to every peer registered **at
-  send time** except the sender. Each recipient gets its **own durable copy**
-  with a broker-rewritten id of the form `"<original-id>|<recipient-name>"`
-  and `to` set to that recipient, so each copy is independently dedupable and
-  ackable. **No backfill:** a peer that registers after the broadcast does not
-  receive it. *Consequence for HMAC:* because the broker rewrites `id` and
-  `to` on each broadcast copy, the original sender's HMAC will NOT verify on
-  broadcast copies — broadcast integrity is broker-trusted, not end-to-end
-  (see §4).
+  send time** except the sender. Each recipient gets its **own durable row**
+  keyed `"<original-id>|<recipient-name>"`, so each copy is independently
+  dedupable and ackable. The delivered/persisted **envelope is the sender's
+  verbatim signed bytes** (`to:"*"`, original `id`, original `hmac`); the
+  per-recipient row key is carried on the `deliver` frame's `delivery_key`
+  (§2.4), **outside the HMAC**. **No backfill:** a peer that registers after
+  the broadcast does not receive it. *HMAC:* because the broker never mutates
+  the signed envelope, the sender's HMAC verifies on broadcast copies exactly
+  as for direct messages — broadcast integrity is genuinely end-to-end (§4).
 
 ## 4. HMAC canonicalization (load-bearing)
 
@@ -259,15 +272,18 @@ Because the canonical form fixes field order and never re-encodes `body`, the
 sender's bytes and the recipient's reconstructed bytes are identical across
 machines and languages — that is the cross-machine guarantee.
 
-### Broadcast caveat (honest limitation)
+### Broadcast is end-to-end too
 
-For `to:*` the broker rewrites `id` (`"<id>|<recipient>"`) and `to` per
-recipient (§3). The recipient verifies over the *received* (rewritten) bytes,
-so the original sender's HMAC does **not** verify on a broadcast copy.
-Adapters log-and-skip the verification failure rather than reject the message.
-**Broadcast integrity is therefore broker-trusted, not end-to-end. Only direct
-messages are end-to-end HMAC-protected.** Do not assume otherwise when
-implementing an adapter.
+For `to:*` the broker delivers the sender's **verbatim signed envelope** to
+every recipient — it does **not** rewrite any signed field. The per-recipient
+durable row key rides on the `deliver` frame's `delivery_key` (§2.4), which is
+**outside the canonical subset** and therefore not covered by the HMAC. A
+recipient reconstructs the canonical form from the received envelope bytes
+(unchanged from the sender) and the HMAC verifies, exactly as for a direct
+message. **Broadcast integrity is end-to-end: a compromised broker cannot
+forge or tamper with a broadcast copy undetected.** An adapter MUST ack by
+`delivery_key`, not `envelope.id`, so each per-recipient copy clears
+independently.
 
 ## 5. Delivery semantics
 
@@ -278,9 +294,11 @@ An adapter MUST implement these to be correct:
   once, possibly more.
 - **Dedupe by `id`.** Because reconnect causes redelivery, duplicates are
   expected. The client MUST keep a bounded consumer-side seen-`id` cache
-  (LRU/ring of configurable size) and suppress an `id` it has already
-  surfaced, so the host sees each id exactly once. For broadcast copies the
-  effective id is the broker-rewritten `"<id>|<recipient>"`.
+  (LRU/ring of configurable size) keyed on the **signed `envelope.id`** and
+  suppress an id it has already surfaced, so the host sees each id exactly
+  once. Broadcast copies all carry the sender's original `envelope.id` (the
+  broker no longer rewrites it); the per-recipient `delivery_key` is used for
+  acking, not for dedupe.
 - **Per-sender FIFO.** The broker delivers messages from a given sender in
   send order (a monotonic per-sender sequence). There is **no** global
   ordering across different senders.
@@ -312,6 +330,19 @@ unacked; the client deduplicates.
   separate shared secret, distributed out-of-band, and is **never transmitted
   on the wire**.
 
+### Audit / persistence durability boundary (accepted)
+
+The broker persists a message (`store.Enqueue`) and appends its `send` audit
+row in **separate transactions**. A broker crash in the narrow window between
+the two leaves a durably-queued message with **no `send` audit row**. This is
+an accepted, documented boundary, **not** a delivery bug: the message is still
+delivered at-least-once (the queue row committed), and the blake3 audit chain
+**stays hash-valid** — it is append-only and never references the message row,
+so it may simply omit a single `send` event for a message that was
+nonetheless delivered. Coupling the audit hash-chain write (a separate
+single-writer subsystem) into the store transaction was rejected as strictly
+worse than this narrow gap. Audit `deliver`/`ack` events are unaffected.
+
 ## 7. Minimal adapter checklist
 
 To write a conforming adapter in any language:
@@ -322,8 +353,9 @@ To write a conforming adapter in any language:
 3. Read one frame: a `peers` frame ⇒ accepted; a read error / close ⇒
    rejected.
 4. Pump frames: for each `deliver`, verify HMAC over the canonical form
-   reconstructed from the received bytes (§4), dedupe by `id` (§5), surface to
-   the host, then `ack` after consumption.
+   reconstructed from the received `envelope` bytes (§4) — this verifies for
+   broadcast too — dedupe by `envelope.id` (§5), surface to the host, then
+   `ack` the frame's `delivery_key` after consumption.
 5. To send: write a bare envelope object — set `to`/`kind` for direct vs
    broadcast, fill all nine fields, compute `hmac` over the canonical form.
 6. To list peers: send a `peers` request, read the `peers` reply.

@@ -115,12 +115,19 @@ func TestRouter_BroadcastFanoutSenderExcluded(t *testing.T) {
 
 	da := readDeliver(t, actx, a)
 	db := readDeliver(t, bctx, b)
-	if da.Envelope.To != "a" || db.Envelope.To != "b" {
-		t.Fatalf("broadcast copies mis-addressed: a=%q b=%q", da.Envelope.To, db.Envelope.To)
+	// The signed envelope is delivered VERBATIM (to:"*", original id) so
+	// the sender's end-to-end HMAC verifies for every recipient. The
+	// broker no longer rewrites it.
+	if da.Envelope.To != "*" || db.Envelope.To != "*" {
+		t.Fatalf("broadcast envelope must stay verbatim to:*; a=%q b=%q", da.Envelope.To, db.Envelope.To)
 	}
-	// Each recipient gets its OWN durable id (own copy + own ack).
-	if da.Envelope.ID == db.Envelope.ID {
-		t.Fatalf("broadcast recipients share an id (%q) — must be distinct copies", da.Envelope.ID)
+	if da.Envelope.ID != "bc1" || db.Envelope.ID != "bc1" {
+		t.Fatalf("broadcast signed id must stay verbatim; a=%q b=%q", da.Envelope.ID, db.Envelope.ID)
+	}
+	// Per-recipient routing/ack identity lives on the Deliver frame's
+	// DeliveryKey (the durable per-recipient row key), OUTSIDE the HMAC.
+	if da.DeliveryKey != "bc1|a" || db.DeliveryKey != "bc1|b" {
+		t.Fatalf("per-recipient delivery_key wrong: a=%q b=%q", da.DeliveryKey, db.DeliveryKey)
 	}
 
 	// Sender must NOT receive its own broadcast: a short read times out.

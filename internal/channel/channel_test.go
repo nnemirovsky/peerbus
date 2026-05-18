@@ -481,10 +481,11 @@ func TestOutboundTools(t *testing.T) {
 	if rpcErr != nil || isErr {
 		t.Fatalf("bus.send failed: rpcErr=%v isErr=%v", rpcErr, isErr)
 	}
-	env, err := rx.Recv(ctx) // Recv HMAC-verifies; an error here = bad signature
+	del, err := rx.Recv(ctx) // Recv HMAC-verifies; an error here = bad signature
 	if err != nil {
 		t.Fatalf("peer2 recv (HMAC verify): %v", err)
 	}
+	env := del.Envelope
 	if env.From != "cc-sender" {
 		t.Fatalf("from = %q, want cc-sender", env.From)
 	}
@@ -493,13 +494,30 @@ func TestOutboundTools(t *testing.T) {
 		t.Fatalf("unexpected body %s (%v)", env.Body, err)
 	}
 
-	// bus.broadcast succeeds at the tool layer (fan-out exclusion etc. is
-	// covered by broker tests; here we assert the tool path works).
+	// bus.broadcast: a raw recipient must actually receive the broadcast,
+	// end-to-end HMAC-verifiable (the broker delivers the sender's verbatim
+	// signed envelope; per-recipient routing rides on DeliveryKey).
+	bx := f.rawClient(ctx, "bx")
+	defer bx.Close()
 	_, isErr, rpcErr = h.callTool("bus.broadcast", map[string]any{
 		"body": map[string]any{"all": "hands"},
 	})
 	if rpcErr != nil || isErr {
 		t.Fatalf("bus.broadcast failed: rpcErr=%v isErr=%v", rpcErr, isErr)
+	}
+	bdel, berr := bx.Recv(ctx)
+	if berr != nil {
+		t.Fatalf("broadcast not delivered to bx / failed HMAC: %v", berr)
+	}
+	if bdel.Envelope.From != "cc-sender" || bdel.Envelope.To != "*" {
+		t.Fatalf("broadcast env = from %q to %q, want cc-sender / *", bdel.Envelope.From, bdel.Envelope.To)
+	}
+	if bdel.DeliveryKey == "" || bdel.DeliveryKey == bdel.Envelope.ID {
+		t.Fatalf("broadcast delivery_key = %q, want per-recipient key != id", bdel.DeliveryKey)
+	}
+	var allGot map[string]string
+	if err := json.Unmarshal(bdel.Envelope.Body, &allGot); err != nil || allGot["all"] != "hands" {
+		t.Fatalf("broadcast body = %s (%v), want {\"all\":\"hands\"}", bdel.Envelope.Body, err)
 	}
 }
 

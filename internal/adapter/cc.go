@@ -3,8 +3,10 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/nnemirovsky/peerbus/internal/channel"
 	"github.com/nnemirovsky/peerbus/internal/wire"
@@ -30,19 +32,14 @@ import (
 //   - inbound: ResumingClient HandlerFunc -> ccBus.handle -> channel push
 //   - outbound: channel.OutboundBus -> ResumingClient broker client (signed)
 //
-// ── HMAC / broadcast limitation (identical to the generic adapter) ──
+// ── HMAC end-to-end, broadcast included (identical to the generic adapter) ──
 //
-// The broker rewrites the signed `id` and `to` per recipient when it fans
-// out a broadcast (internal/broker/router.go: copyEnv.ID = id+"|"+r). That
-// mutation breaks the sender's end-to-end HMAC for every per-recipient
-// broadcast copy, so Client.Recv REJECTS broadcast copies with
-// ErrInboundHMAC. Per the locked at-least-once model a failed-HMAC inbound
-// is logged at debug and SKIPPED — it is never surfaced as a claude/channel
-// notification and never crashes the resume loop (the loop's
-// ErrInboundHMAC branch in reconnect.go handles this). DIRECT (to:<name>)
-// messages are NOT rewritten and ARE end-to-end HMAC-verifiable — they
-// push-wake the session normally. The broker-side fix is tracked for the
-// review phase / Task 12, same as the generic adapter.
+// The broker no longer mutates the signed envelope on broadcast fan-out;
+// the per-recipient routing/ack identity rides on wire.Deliver.DeliveryKey
+// outside the HMAC subset (internal/broker/router.go routeBroadcast). Both
+// direct and broadcast deliveries verify end-to-end at Client.Recv and
+// push-wake the session normally — a compromised broker cannot forge or
+// tamper with a peer's message.
 
 // ccBus implements channel.OutboundBus over a ResumingClient. Outbound
 // bus.send/bus.broadcast/bus.peers sign via the shared client; inbound
@@ -50,7 +47,6 @@ import (
 type ccBus struct {
 	rc  *ResumingClient
 	srv *channel.Server // set before the resume loop starts; only read in handle
-	log *slog.Logger
 }
 
 func (b *ccBus) Send(ctx context.Context, to string, body json.RawMessage) error {
@@ -88,6 +84,11 @@ func (b *ccBus) Peers(ctx context.Context) ([]string, error) {
 		return names, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-time.After(5 * time.Second):
+		// MAJOR-6: bound the wait. Without this a peers reply lost across
+		// a reconnect would block until ctx cancel (forever for a
+		// long-lived cc session). Matches genericBus.Peers.
+		return nil, fmt.Errorf("adapter: peers reply timed out")
 	}
 }
 
@@ -95,8 +96,9 @@ func (b *ccBus) Peers(ctx context.Context) ([]string, error) {
 // envelope is already HMAC-verified (Client.Recv) and already deduped
 // (ResumingClient.surface). It is mapped to a claude/channel push-wake and
 // returning nil means "consumed" so the resume loop acks it immediately.
-// Broadcast copies never reach here: they fail HMAC at Recv and the resume
-// loop logs+skips them (see the package-doc HMAC/broadcast note).
+// Broadcast copies reach here too: the broker delivers the sender's
+// verbatim signed envelope so they HMAC-verify at Recv and push-wake the
+// session like any direct message (see the package-doc HMAC note).
 func (b *ccBus) handle(_ context.Context, env wire.Envelope) error {
 	b.srv.Deliver(channel.Inbound{
 		ID:     env.ID,
@@ -135,7 +137,7 @@ func (m *ccMode) Run(ctx context.Context) error {
 	defer cancel()
 
 	rc := NewResumingClient(cfg, m.dedupeSize)
-	bus := &ccBus{rc: rc, log: log}
+	bus := &ccBus{rc: rc}
 	srv := channel.NewServer(bus, os.Stdin, os.Stdout)
 	bus.srv = srv
 

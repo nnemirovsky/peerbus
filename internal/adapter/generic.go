@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"sync"
@@ -32,26 +33,23 @@ import (
 // file is the only place the two are wired together (genericBus implements
 // mcp.Bus over the resuming client).
 //
-// ── HMAC / broadcast limitation (flagged by Task 9, tracked for review
-// phase 1 / Task 12 — NOT fixed in Task 10) ──
+// ── HMAC end-to-end, broadcast included ──
 //
-// The broker rewrites the signed `id` and `to` fields per recipient when it
-// fans out a broadcast (internal/broker/router.go: copyEnv.ID = id+"|"+r).
-// That mutation breaks the sender's end-to-end HMAC for every per-recipient
-// broadcast copy, so Client.Recv correctly REJECTS broadcast copies with
-// ErrInboundHMAC. Per the locked at-least-once model a failed-HMAC inbound
-// is a rejected message: it is logged at debug and skipped, never surfaced
-// to the host and never crashes the drain loop. DIRECT (to:<name>) messages
-// are NOT rewritten and ARE end-to-end HMAC-verifiable — they drain
-// normally. The broker-side fix (sign-once / recipient-stable canonical
-// form) is out of scope here and tracked for the review phase / Task 12.
+// The broker no longer mutates the signed envelope on broadcast fan-out:
+// the persisted/delivered envelope bytes are the sender's verbatim signed
+// envelope (to:"*", original id, original hmac); the per-recipient routing
+// + ack identity rides on wire.Deliver.DeliveryKey, OUTSIDE the HMAC
+// canonical subset (see internal/broker/router.go routeBroadcast). Both
+// direct and broadcast deliveries therefore verify end-to-end at
+// Client.Recv (a compromised broker cannot forge or tamper with a peer's
+// message), and broadcast copies surface to the host like any other
+// message.
 
 // genericBus implements mcp.Bus over a ResumingClient. Inbound messages the
 // resume loop has verified + deduped are buffered here; bus.drain empties
 // the buffer (the resume loop already acked each one via consume-then-ack).
 type genericBus struct {
-	rc  *ResumingClient
-	log *slog.Logger
+	rc *ResumingClient
 
 	mu      sync.Mutex
 	pending []mcp.InboundMessage
@@ -61,8 +59,10 @@ type genericBus struct {
 // envelope is already HMAC-verified (Client.Recv) and already deduped
 // (ResumingClient.surface). Buffering it and returning nil means "consumed"
 // so the resume loop acks it immediately — bus.drain then just hands the
-// buffered, already-acked messages to the host. Broadcast copies never
-// reach here: they fail HMAC at Recv and the resume loop logs+skips them.
+// buffered, already-acked messages to the host. Broadcast copies reach
+// here too: they are end-to-end HMAC-verified (the broker delivers the
+// sender's verbatim signed envelope, original id) and buffered like any
+// direct message.
 func (b *genericBus) handle(_ context.Context, env wire.Envelope) error {
 	b.mu.Lock()
 	b.pending = append(b.pending, mcp.InboundMessage{
@@ -138,11 +138,13 @@ func (b *genericBus) Drain(_ context.Context) ([]mcp.InboundMessage, error) {
 // connection (the adapter's stdio session owns this lifecycle).
 func NewGenericBus(ctx context.Context, cfg ClientConfig, dedupeSize int, log *slog.Logger) (mcp.Bus, func()) {
 	if log == nil {
-		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		// Discard sink: a nil logger means "no logging", not "default to
+		// stderr" — the embedding mode/test owns log routing.
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	rc := NewResumingClient(cfg, dedupeSize)
-	bus := &genericBus{rc: rc, log: log}
+	bus := &genericBus{rc: rc}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

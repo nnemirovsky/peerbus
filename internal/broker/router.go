@@ -19,6 +19,23 @@
 //     A peer that registers AFTER the broadcast does NOT receive it (there
 //     is no backfill of a name into an already-sent broadcast).
 //
+// Audit/persist durability boundary (explicit, accepted): store.Enqueue
+// and the "send" audit append are SEPARATE transactions (Enqueue commits
+// the message row; auditEvent then appends one audit row through the
+// single Appender). A broker crash in the window between the two leaves a
+// durably-queued message with NO "send" audit row. This is an accepted
+// boundary, not a bug: the audit chain stays hash-valid (it is append-only
+// and never references the message row by FK), it may simply OMIT a send
+// event for a message that was nonetheless delivered at-least-once. The
+// alternative — one transaction spanning store + audit — would force the
+// audit hash-chain write (internal/audit, a separate package that
+// serialises its own single-writer Append) into store's Enqueue tx,
+// coupling the two packages and the single-writer invariant in a way that
+// is strictly worse than this narrow, documented gap. The delivery
+// guarantee (at-least-once, durable) is unaffected; only audit
+// completeness has this crash-window caveat. Documented in
+// docs/wire-protocol.md as well.
+//
 // Audit single-writer invariant (load-bearing): the blake3 hash chain is
 // only well defined if appends are serialised. Every send/deliver/ack
 // audit event in this file goes through ONE broker-owned *audit.Appender
@@ -88,7 +105,13 @@ func (s *Server) deliverTo(ctx context.Context, recipient string, m store.Messag
 	del := wire.Deliver{
 		ProtocolVersion: wire.ProtocolVersion,
 		Type:            wire.ControlDeliver,
-		Envelope:        env,
+		// DeliveryKey is the durable per-recipient row key (m.ID). For a
+		// direct message it equals env.ID; for a broadcast copy it is
+		// "<origID>|<recipient>" while env stays the sender's verbatim
+		// signed envelope (to:"*", original id) so the recipient's HMAC
+		// verifies. The recipient acks by this key.
+		DeliveryKey: m.ID,
+		Envelope:    env,
 	}
 	if err := pc.writeJSON(ctx, del); err != nil {
 		s.log.Warn("deliver failed", "id", m.ID, "to", recipient, "err", err)
@@ -106,12 +129,26 @@ func (s *Server) deliverTo(ctx context.Context, recipient string, m store.Messag
 // connection's bound identity, not env.From, for routing/audit purposes
 // (env.From is still carried verbatim end-to-end and HMAC-protected).
 //
-//   - to == "*"  → broadcast: fan out to every currently-registered peer
-//     except the sender, each with its OWN durable copy + own id.
-//   - otherwise   → direct: persist for env.To, deliver if connected else
-//     leave queued (offline path), delivered on the recipient's reconnect.
+//   - to == "*" AND kind == broadcast → broadcast: fan out to every
+//     currently-registered peer except the sender, each with its OWN
+//     durable row keyed per recipient.
+//   - to != "*" AND kind == msg → direct: persist for env.To, deliver if
+//     connected else leave queued (offline path).
+//
+// A mismatched combination (to=="*" with kind!=broadcast, or kind==
+// broadcast with to!="*") is rejected: the two fields are redundant by
+// design and an inconsistent pair is a malformed/forged frame, not a
+// best-effort routing hint. Accepting it via OR-logic would let a
+// kind==msg, to=="*" frame fan out (or a kind==broadcast, to=="bob" frame
+// be treated direct) — both are protocol violations.
 func (s *Server) routeEnvelope(ctx context.Context, from string, env wire.Envelope) {
-	if env.To == "*" || env.Kind == wire.KindBroadcast {
+	isBroadcast := env.To == "*"
+	if isBroadcast != (env.Kind == wire.KindBroadcast) {
+		s.log.Warn("inconsistent kind/to combination rejected",
+			"id", env.ID, "to", env.To, "kind", env.Kind)
+		return
+	}
+	if isBroadcast {
 		s.routeBroadcast(ctx, from, env)
 		return
 	}
@@ -156,42 +193,52 @@ func (s *Server) routeDirect(ctx context.Context, from string, env wire.Envelope
 }
 
 // routeBroadcast fans a to:* envelope out to every currently-registered
-// peer EXCEPT the sender. Each recipient gets its OWN durable row with a
-// per-recipient id ("<id>|<recipient>") so each can be acked/redelivered
-// independently, and so the store's UNIQUE(id) does not collapse the N
-// copies into one. NO backfill: the recipient set is snapshotted here, at
-// send time; a peer that registers later does not receive this broadcast.
+// peer EXCEPT the sender. Each recipient gets its OWN durable row keyed by
+// a per-recipient row id ("<id>|<recipient>") so each can be
+// acked/redelivered independently and the store's UNIQUE(id) does not
+// collapse the N copies into one. NO backfill: the recipient set is
+// snapshotted here, at send time; a peer that registers later does not
+// receive this broadcast.
+//
+// CRITICAL (end-to-end HMAC, load-bearing): the broker does NOT mutate or
+// re-marshal the signed wire.Envelope. The persisted/delivered envelope
+// bytes are the sender's ORIGINAL signed envelope (to:"*", original id,
+// original hmac). The per-recipient routing/dedupe/ack identity lives ONLY
+// on the store row key (store.Message.ID) and is carried to the recipient
+// on the wire.Deliver control frame's DeliveryKey field, which is NOT in
+// the HMAC canonical subset. The recipient therefore verifies exactly what
+// the sender signed (a compromised broker cannot forge a broadcast copy)
+// and acks by the row key. Direct messages take the same shape with
+// DeliveryKey == env.ID (routeDirect / deliverTo).
 func (s *Server) routeBroadcast(ctx context.Context, from string, env wire.Envelope) {
+	// The sender's verbatim signed envelope — marshalled ONCE, byte-stable,
+	// identical for every recipient. Never re-marshalled per recipient.
+	raw, err := json.Marshal(env)
+	if err != nil {
+		s.log.Warn("marshal broadcast envelope failed", "id", env.ID, "err", err)
+		return
+	}
 	recipients := s.registry.List() // snapshot at send time — no backfill
 	for _, r := range recipients {
 		if r == from {
 			continue // sender exclusion
 		}
-		// Per-recipient envelope: distinct id + concrete To so the row is
-		// independently dedupable, ackable and redeliverable. The body
-		// and hmac are carried verbatim (the broker never re-signs; the
-		// recipient verifies the original sender's HMAC over the original
-		// canonical form, which is unaffected by the broker-local id used
-		// purely for the durable per-recipient row).
-		copyEnv := env
-		copyEnv.ID = env.ID + "|" + r
-		copyEnv.To = r
-		raw, err := json.Marshal(copyEnv)
-		if err != nil {
-			s.log.Warn("marshal broadcast copy failed", "id", copyEnv.ID, "err", err)
-			continue
-		}
-		msg := store.Message{ID: copyEnv.ID, From: from, To: r, Envelope: raw}
+		// Per-recipient durable row key only — the envelope bytes are the
+		// untouched signed original; the recipient name lives on the row
+		// (To) and the Deliver frame's DeliveryKey, NOT inside the signed
+		// envelope.
+		rowID := env.ID + "|" + r
+		msg := store.Message{ID: rowID, From: from, To: r, Envelope: raw}
 		err = s.store.Enqueue(msg)
 		switch {
 		case err == nil:
-			s.auditEvent("send", copyEnv.ID, from, r)
+			s.auditEvent("send", rowID, from, r)
 		case errors.Is(err, store.ErrDuplicateID):
 			continue
 		case errors.Is(err, store.ErrUnknownPeer):
 			continue
 		default:
-			s.log.Warn("broadcast enqueue failed", "id", copyEnv.ID, "err", err)
+			s.log.Warn("broadcast enqueue failed", "id", rowID, "err", err)
 			continue
 		}
 		s.deliverTo(ctx, r, msg)

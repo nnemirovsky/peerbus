@@ -46,9 +46,20 @@ type Peers struct {
 }
 
 // Deliver wraps an Envelope pushed from the broker to a recipient.
+//
+// DeliveryKey is the broker's per-recipient durable row key (the store
+// Message.ID). It is carried OUTSIDE the signed Envelope deliberately: the
+// Envelope is byte-identical to what the sender signed (so the recipient's
+// end-to-end HMAC verifies, including for broadcast — to:"*", original id),
+// while the routing/ack identity lives on this control frame, which is NOT
+// covered by the HMAC. The recipient acks by DeliveryKey, not Envelope.ID,
+// so each per-recipient broadcast copy is independently ackable without
+// mutating (and thus invalidating) the signed envelope. For a direct
+// message DeliveryKey equals Envelope.ID.
 type Deliver struct {
 	ProtocolVersion string      `json:"protocol_version"`
 	Type            ControlType `json:"type"`
+	DeliveryKey     string      `json:"delivery_key"`
 	Envelope        Envelope    `json:"envelope"`
 }
 

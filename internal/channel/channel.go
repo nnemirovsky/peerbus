@@ -115,13 +115,10 @@ func NewServer(ob OutboundBus, in io.Reader, w io.Writer) *Server {
 		in, w,
 		mcp.WithServerName("peerbus-cc-adapter"),
 		mcp.WithoutDrain(),
-		mcp.WithCapabilities(map[string]any{
-			// DOCUMENTED — CHANNELS_SCHEMA.md §1: value is always {}.
-			// (NOT claude/channel/permission — see package doc.)
-			"experimental": map[string]any{
-				ChannelCapabilityKey: map[string]any{},
-			},
-		}),
+		// DOCUMENTED — CHANNELS_SCHEMA.md §1: experimental["claude/channel"]
+		// value is always {}. (NOT claude/channel/permission — see package
+		// doc.) The key+shape is fixed, so this is a parameterless option.
+		mcp.WithChannelCapability(),
 	)
 	return &Server{mcp: srv, out: ob}
 }

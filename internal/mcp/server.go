@@ -124,11 +124,26 @@ func WithServerName(name string) ServerOption {
 	return func(s *Server) { s.serverName = name }
 }
 
-// WithCapabilities merges extra entries into the initialize result's
-// `capabilities` object (in addition to the always-present `tools`). The cc
-// adapter uses this to advertise experimental["claude/channel"]={}.
-func WithCapabilities(caps map[string]any) ServerOption {
-	return func(s *Server) { s.extraCaps = caps }
+// channelCapabilityKey is the experimental capability key Claude Code's
+// channels feature registers its push-wake listener under. It is fixed by
+// the claude/channel schema (CHANNELS_SCHEMA.md); the cc adapter is the
+// only caller and there is exactly one value, so this is a parameterless
+// option rather than an open map.
+const channelCapabilityKey = "claude/channel"
+
+// WithChannelCapability advertises experimental["claude/channel"]={} in the
+// initialize result's `capabilities` object (in addition to the
+// always-present `tools`). The cc adapter uses this so Claude Code
+// registers its claude/channel push-wake listener. The generic adapter
+// never sets it (tools-only).
+func WithChannelCapability() ServerOption {
+	return func(s *Server) {
+		s.extraCaps = map[string]any{
+			"experimental": map[string]any{
+				channelCapabilityKey: map[string]any{},
+			},
+		}
+	}
 }
 
 // WithoutDrain omits bus.drain from tools/list. The cc adapter (push-driven

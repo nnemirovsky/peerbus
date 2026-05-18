@@ -275,21 +275,26 @@ func (c *Client) Peers(ctx context.Context) (names []string, strays []wire.Deliv
 	}
 }
 
-// Recv blocks for the next inbound deliver frame, HMAC-verifies it
-// end-to-end, and returns the carried envelope. A frame that fails
-// verification is REJECTED (never surfaced) — the function returns
-// ErrInboundHMAC so the caller can log/drop it and the loop continues. The
+// Recv blocks for the next inbound deliver frame, HMAC-verifies the carried
+// envelope end-to-end, and returns the whole wire.Deliver (so the caller
+// has BOTH the verified envelope and the broker's per-recipient
+// DeliveryKey, which is what an ack must reference — see Ack). The envelope
+// is exactly the bytes the sender signed (the broker never mutates it, even
+// for a broadcast copy: the per-recipient routing identity rides on
+// DeliveryKey, outside the HMAC). A frame that fails verification is
+// REJECTED (never surfaced) — the function returns ErrInboundHMAC with the
+// Deliver still populated so the caller can log/drop and keep pumping. The
 // broker handshake ack is consumed in Connect, so non-deliver frames here
 // are skipped (a peers reply can arrive if Peers raced).
-func (c *Client) Recv(ctx context.Context) (wire.Envelope, error) {
+func (c *Client) Recv(ctx context.Context) (wire.Deliver, error) {
 	ws := c.conn()
 	if ws == nil {
-		return wire.Envelope{}, ErrNotConnected
+		return wire.Deliver{}, ErrNotConnected
 	}
 	for {
 		typ, data, err := ws.Read(ctx)
 		if err != nil {
-			return wire.Envelope{}, err
+			return wire.Deliver{}, err
 		}
 		if typ != websocket.MessageText {
 			continue
@@ -307,15 +312,21 @@ func (c *Client) Recv(ctx context.Context) (wire.Envelope, error) {
 		}
 		var del wire.Deliver
 		if err := json.Unmarshal(data, &del); err != nil {
-			return wire.Envelope{}, fmt.Errorf("adapter: deliver decode: %w", err)
+			return wire.Deliver{}, fmt.Errorf("adapter: deliver decode: %w", err)
+		}
+		// A direct delivery may omit delivery_key (older shape / direct
+		// path): fall back to the envelope id, which equals the row key
+		// for direct messages.
+		if del.DeliveryKey == "" {
+			del.DeliveryKey = del.Envelope.ID
 		}
 		if err := hmac.VerifyEnvelope(c.cfg.HMACSecret, del.Envelope); err != nil {
 			// Reject — a compromised broker cannot forge a peer. Surface
 			// the typed error with the offending id so the caller can
 			// drop+log and keep pumping.
-			return del.Envelope, fmt.Errorf("%w (id=%q): %v", ErrInboundHMAC, del.Envelope.ID, err)
+			return del, fmt.Errorf("%w (id=%q): %v", ErrInboundHMAC, del.Envelope.ID, err)
 		}
-		return del.Envelope, nil
+		return del, nil
 	}
 }
 

@@ -260,12 +260,17 @@ func TestBusSendDelivers(t *testing.T) {
 		t.Fatalf("bus.send failed: rpcErr=%v isErr=%v", rpcErr, isErr)
 	}
 
-	env, err := rx.Recv(ctx)
+	del, err := rx.Recv(ctx)
 	if err != nil {
 		t.Fatalf("rx recv: %v", err)
 	}
+	env := del.Envelope
 	if env.From != "sender" {
 		t.Fatalf("from = %q, want sender", env.From)
+	}
+	// Direct delivery: DeliveryKey == signed envelope id.
+	if del.DeliveryKey != env.ID {
+		t.Fatalf("direct delivery_key = %q, want == signed id %q", del.DeliveryKey, env.ID)
 	}
 	if err := hmacpkg.VerifyEnvelope(testSecret, env); err != nil {
 		t.Fatalf("delivered direct message not HMAC-verifiable: %v", err)
@@ -276,8 +281,10 @@ func TestBusSendDelivers(t *testing.T) {
 }
 
 // TestBusBroadcastFansOut: bus.broadcast reaches another registered peer
-// (the broker rewrites signed id/to per recipient, so the copy is not
-// end-to-end HMAC-verifiable by design — asserted, documented limitation).
+// with the sender's verbatim signed envelope — it MUST verify end-to-end
+// (the broker no longer rewrites id/to; the per-recipient routing rides on
+// wire.Deliver.DeliveryKey, outside the HMAC). Unconditional assertions:
+// delivery occurred AND the body content is the broadcast payload.
 func TestBusBroadcastFansOut(t *testing.T) {
 	f := newBrokerFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -294,20 +301,28 @@ func TestBusBroadcastFansOut(t *testing.T) {
 		t.Fatalf("bus.broadcast failed: rpcErr=%v isErr=%v", rpcErr, isErr)
 	}
 
-	env, rerr := rx.Recv(ctx)
+	del, rerr := rx.Recv(ctx)
 	if rerr != nil {
-		// Expected: broker rewrites signed id/to on broadcast fan-out, so
-		// the per-recipient copy fails end-to-end HMAC by design.
-		if !strings.Contains(rerr.Error(), "failed HMAC verify") {
-			t.Fatalf("broadcast recv error = %v, want HMAC rejection", rerr)
-		}
-		if !strings.HasPrefix(env.ID, "") || env.From != "caster" {
-			t.Fatalf("broadcast copy = %+v, want from=caster", env)
-		}
-		return
+		t.Fatalf("broadcast not delivered / failed HMAC: %v", rerr)
 	}
+	env := del.Envelope
 	if env.From != "caster" {
 		t.Fatalf("broadcast from = %q, want caster", env.From)
+	}
+	if env.To != "*" {
+		t.Fatalf("delivered broadcast envelope to = %q, want \"*\" (verbatim signed)", env.To)
+	}
+	// DeliveryKey is the per-recipient row key, carried OUTSIDE the signed
+	// envelope; it must be present and distinct from the signed id.
+	if del.DeliveryKey == "" || del.DeliveryKey == env.ID {
+		t.Fatalf("delivery_key = %q, want per-recipient key != signed id %q", del.DeliveryKey, env.ID)
+	}
+	if err := hmacpkg.VerifyEnvelope(testSecret, env); err != nil {
+		t.Fatalf("broadcast copy not end-to-end HMAC-verifiable: %v", err)
+	}
+	var got map[string]int
+	if err := json.Unmarshal(env.Body, &got); err != nil || got["announce"] != 1 {
+		t.Fatalf("broadcast body = %s (%v), want {\"announce\":1}", env.Body, err)
 	}
 }
 

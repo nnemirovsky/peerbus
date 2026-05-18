@@ -1,11 +1,9 @@
 package wire
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 )
 
 // ProtocolVersion is the single supported wire protocol version. Policy is
@@ -86,49 +84,4 @@ func Canonical(env Envelope) ([]byte, error) {
 		Body:            body,
 	}
 	return json.Marshal(c)
-}
-
-// Encoder writes newline-delimited JSON objects (one per line) to an
-// io.Writer. Safe for sequential use by a single goroutine.
-type Encoder struct {
-	w io.Writer
-}
-
-// NewEncoder returns an Encoder over w.
-func NewEncoder(w io.Writer) *Encoder { return &Encoder{w: w} }
-
-// Encode marshals v and writes it followed by a single '\n'. v must marshal to
-// a single-line JSON object (encoding/json does not emit newlines).
-func (e *Encoder) Encode(v any) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	_, err = e.w.Write(b)
-	return err
-}
-
-// Decoder reads newline-delimited JSON objects from an io.Reader.
-type Decoder struct {
-	s *bufio.Scanner
-}
-
-// NewDecoder returns a Decoder over r. Lines up to 1 MiB are supported.
-func NewDecoder(r io.Reader) *Decoder {
-	s := bufio.NewScanner(r)
-	s.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	return &Decoder{s: s}
-}
-
-// Decode reads the next newline-delimited JSON object into v. It returns
-// io.EOF when the stream is exhausted with no further line.
-func (d *Decoder) Decode(v any) error {
-	if !d.s.Scan() {
-		if err := d.s.Err(); err != nil {
-			return err
-		}
-		return io.EOF
-	}
-	return json.Unmarshal(d.s.Bytes(), v)
 }

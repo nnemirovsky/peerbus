@@ -28,15 +28,21 @@ func TestRunMissingAdapterErrors(t *testing.T) {
 	}
 }
 
-func TestRunKnownAdapterClean(t *testing.T) {
+// TestRunKnownAdapterRequiresEnv: a known mode resolves+constructs, but with
+// no PEERBUS_URL/PEERBUS_TOKEN the binary refuses to start with a clear
+// non-zero exit (it no longer prints a skeleton line and exits 0 — it wires
+// the real run path).
+func TestRunKnownAdapterRequiresEnv(t *testing.T) {
+	t.Setenv("PEERBUS_URL", "")
+	t.Setenv("PEERBUS_TOKEN", "")
 	for _, mode := range []string{"generic", "cc"} {
 		var out, errb bytes.Buffer
 		code := run([]string{"--adapter=" + mode}, &out, &errb)
-		if code != 0 {
-			t.Fatalf("mode %q: exit %d, want 0 (stderr=%q)", mode, code, errb.String())
+		if code == 0 {
+			t.Fatalf("mode %q: exit 0, want non-zero (missing PEERBUS_URL)", mode)
 		}
-		if !strings.Contains(out.String(), mode) {
-			t.Fatalf("mode %q: stdout = %q, want it to mention the mode", mode, out.String())
+		if !strings.Contains(errb.String(), "PEERBUS_URL is required") {
+			t.Fatalf("mode %q: stderr = %q, want PEERBUS_URL requirement", mode, errb.String())
 		}
 	}
 }

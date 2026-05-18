@@ -121,14 +121,16 @@ func TestRecipientPath(t *testing.T) {
 				t.Fatalf("SignEnvelope: %v", err)
 			}
 
-			var buf bytes.Buffer
-			if err := wire.NewEncoder(&buf).Encode(signed); err != nil {
-				t.Fatalf("wire encode: %v", err)
+			// The WS transport carries exactly one JSON object per
+			// message, so a plain marshal→unmarshal is the accurate
+			// recipient-path round-trip.
+			b, err := json.Marshal(signed)
+			if err != nil {
+				t.Fatalf("wire marshal: %v", err)
 			}
-
 			var recovered wire.Envelope
-			if err := wire.NewDecoder(&buf).Decode(&recovered); err != nil {
-				t.Fatalf("wire decode: %v", err)
+			if err := json.Unmarshal(b, &recovered); err != nil {
+				t.Fatalf("wire unmarshal: %v", err)
 			}
 
 			if err := VerifyEnvelope(secret, recovered); err != nil {

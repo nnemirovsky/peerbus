@@ -31,6 +31,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -270,8 +271,26 @@ func (s *Server) handshake(ctx context.Context, pc *peerConn) (string, bool) {
 // new connection and marks them delivered. This is the offline/pending store
 // path: it is exactly what makes a takeover-race message (queued to the name
 // while the old conn was being displaced) reach the new conn rather than
-// being lost. Full ack/redelivery routing is Task 8; here we deliver + mark
-// delivered so the takeover-race guarantee holds and is testable now.
+// being lost.
+//
+// Double-delivery window (precise, accepted): the conn is made
+// registry-visible by s.registry.Bind in handshake() BEFORE this snapshot
+// is taken. In the window between Bind and the PendingFor read below, a
+// concurrent routeDirect for this name can both (a) enqueue+deliverTo the
+// live conn AND (b) leave a delivered=1 row that this PendingFor (delivered
+// =0 only) will NOT pick up — so that specific message is not doubled. The
+// genuinely doubled case is a message enqueued just before Bind and
+// delivered by a concurrent deliverTo right after Bind while it is still
+// delivered=0 here: the recipient then receives it twice. This is ACCEPTED
+// and SAFE because the delivery model is at-least-once with mandatory
+// consumer-side dedupe (internal/adapter ResumingClient.surface keys off
+// the signed envelope id), so a duplicate is suppressed before the host
+// ever sees it — the same mechanism that already covers reconnect
+// redelivery. Taking the snapshot strictly before Bind is not done on
+// purpose: Bind must run first so the same-token takeover displaces the old
+// conn (otherwise a racing send could be written to the dying socket and
+// lost), which is the stronger guarantee. The dedupe-covered duplicate is
+// the deliberately chosen lesser cost.
 func (s *Server) flushPending(ctx context.Context, pc *peerConn) {
 	pend, err := s.store.PendingFor(pc.name)
 	if err != nil {
@@ -346,7 +365,18 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	go func() { errCh <- hs.ListenAndServe() }()
 	select {
 	case <-ctx.Done():
-		_ = hs.Close()
+		// Graceful shutdown with a bounded drain window: stop accepting new
+		// connections and let in-flight WS writes finish rather than
+		// hard-closing every socket mid-frame. Displaced clients reconnect
+		// + resume regardless (the adapter treats any drop as redial), but
+		// a clean Shutdown avoids tearing a delivery mid-write and lets the
+		// listener release the port deterministically. If the drain exceeds
+		// the deadline we fall back to a hard Close.
+		shCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := hs.Shutdown(shCtx); err != nil {
+			_ = hs.Close()
+		}
 		<-errCh
 		return ctx.Err()
 	case err := <-errCh:

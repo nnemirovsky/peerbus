@@ -111,16 +111,15 @@ role-neutral transport.
   form from the received wire bytes and verifies before surfacing the message,
   so a compromised broker **cannot forge or tamper with a direct message**
   undetected. Direct-message integrity is genuinely end-to-end.
-- **Broadcast integrity is broker-trusted, NOT end-to-end (known limitation).**
-  For `to:*` the broker rewrites per-recipient envelope fields (it gives each
-  copy its own id and concrete `to` so the copies are independently dedupable
-  and ackable). Because a recipient verifies the HMAC over the *received* wire
-  bytes — which now carry broker-rewritten fields — the original sender's HMAC
-  no longer verifies on broadcast copies. Adapters log-and-skip the failed
-  verification rather than reject the message. **Consequence: broadcast
-  integrity depends on trusting the broker; only direct messages are
-  end-to-end HMAC-protected.** This is a real limitation, stated honestly
-  here; it is tracked for a future broker-side fix.
+- **End-to-end HMAC for broadcast too.** For `to:*` the broker delivers the
+  sender's **verbatim signed envelope** (original `id`, `to:"*"`, original
+  `hmac`) to every recipient — it does **not** rewrite the signed fields. The
+  per-recipient durable row key and recipient identity ride on the
+  `wire.Deliver` control frame's `delivery_key` field, which is **outside the
+  HMAC canonical subset**. The recipient therefore verifies exactly what the
+  sender signed, so a compromised broker **cannot forge or tamper with a
+  broadcast copy** undetected either. Broadcast integrity is genuinely
+  end-to-end, same as direct messages.
 - **blake3 audit chain.** The broker appends an audit row for every
   send/deliver/ack; each row's hash is `blake3(prev_hash || canonical_event)`
   (genesis `blake3("")`). A single serialized writer keeps the chain well
@@ -198,14 +197,36 @@ Recommended timed self-drain + escalation pattern for Hermes:
 
 **An interactive Claude Code session** uses `--adapter=cc` instead. It is the
 MCP `claude/channel` server; inbound is a push-wake that creates a turn in an
-idle session (no `bus.drain`). Launch:
+idle session (no `bus.drain`). Register it in `.mcp.json` as a server named
+`peerbus`:
 
-```sh
-claude --dangerously-load-development-channels server:peerbus-adapter --adapter=cc
+```json
+{
+  "mcpServers": {
+    "peerbus": {
+      "command": "peerbus-adapter",
+      "args": ["--adapter=cc"],
+      "env": {
+        "PEERBUS_URL": "ws://broker-host:8080",
+        "PEERBUS_NAME": "",
+        "PEERBUS_TOKEN": "<static bearer token>",
+        "PEERBUS_HMAC_SECRET": "<shared end-to-end HMAC secret>"
+      }
+    }
+  }
+}
 ```
 
-(env: `PEERBUS_URL` / `PEERBUS_NAME` / `PEERBUS_TOKEN` / `PEERBUS_HMAC_SECRET`,
-same as generic.) Manual end-to-end checklist:
+then launch Claude Code pointing at that server entry by name:
+
+```sh
+claude --dangerously-load-development-channels server:peerbus
+```
+
+(`server:peerbus` resolves to the `.mcp.json` `peerbus` entry above —
+`peerbus-adapter --adapter=cc`. Same env vars as generic; leave
+`PEERBUS_NAME` empty to auto-register `cc-<host>-<pid>-<rand>`.) Manual
+end-to-end checklist:
 [`docs/manual-e2e-claude-channel.md`](docs/manual-e2e-claude-channel.md).
 
 ## Write your own adapter

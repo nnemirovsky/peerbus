@@ -82,17 +82,21 @@ func TestClient_RegisterSendReceiveAck(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 
-	env, err := alice.Recv(ctx)
+	del, err := alice.Recv(ctx)
 	if err != nil {
 		t.Fatalf("recv: %v", err)
 	}
+	env := del.Envelope
 	if env.ID != "m1" || env.From != "bob" {
 		t.Fatalf("received envelope = %+v, want id=m1 from=bob", env)
+	}
+	if del.DeliveryKey != "m1" {
+		t.Fatalf("direct delivery_key = %q, want m1", del.DeliveryKey)
 	}
 	if err := hmacpkg.VerifyEnvelope(testSecret, env); err != nil {
 		t.Fatalf("inbound envelope failed HMAC verify: %v", err)
 	}
-	if err := alice.Ack(ctx, env.ID); err != nil {
+	if err := alice.Ack(ctx, del.DeliveryKey); err != nil {
 		t.Fatalf("ack: %v", err)
 	}
 }
@@ -121,23 +125,25 @@ func TestClient_BroadcastAndPeers(t *testing.T) {
 	if err := sender.Broadcast(ctx, "bc1", "ts", "peer-bus", json.RawMessage(`{"x":1}`)); err != nil {
 		t.Fatalf("broadcast: %v", err)
 	}
-	// The broker fans a broadcast out by rewriting the signed `id` and
-	// `to` fields per recipient (router.go: copyEnv.ID = id+"|"+r). That
-	// breaks the sender's end-to-end HMAC for the per-recipient copy by
-	// design of the Task 8 router, so the client correctly REJECTS it
-	// (ErrInboundHMAC) rather than surfacing a frame whose signed fields
-	// the broker mutated. The recipient still observes the rewritten id.
-	env, err := a.Recv(ctx)
-	if rerr, isErr := err, err != nil; isErr {
-		if env.ID != "bc1|a" {
-			t.Fatalf("broadcast copy id = %q, want bc1|a", env.ID)
-		}
-		if !strings.Contains(rerr.Error(), "failed HMAC verify") {
-			t.Fatalf("broadcast recv error = %v, want inbound HMAC rejection", rerr)
-		}
-		return
+	// The broker delivers the sender's VERBATIM signed envelope on a
+	// broadcast (to:"*", original id, original hmac). The per-recipient
+	// row key rides on wire.Deliver.DeliveryKey, OUTSIDE the HMAC subset,
+	// so the copy verifies end-to-end and DeliveryKey is the per-recipient
+	// row id "<origID>|<recipient>".
+	del, err := a.Recv(ctx)
+	if err != nil {
+		t.Fatalf("broadcast copy not delivered / failed HMAC: %v", err)
 	}
-	t.Fatalf("expected broadcast copy to fail end-to-end HMAC (broker rewrites signed id/to); got verified env %+v", env)
+	env := del.Envelope
+	if env.ID != "bc1" || env.To != "*" {
+		t.Fatalf("broadcast envelope = id %q to %q, want verbatim id=bc1 to=*", env.ID, env.To)
+	}
+	if del.DeliveryKey != "bc1|a" {
+		t.Fatalf("broadcast delivery_key = %q, want per-recipient bc1|a", del.DeliveryKey)
+	}
+	if err := hmacpkg.VerifyEnvelope(testSecret, env); err != nil {
+		t.Fatalf("broadcast copy not end-to-end HMAC-verifiable: %v", err)
+	}
 }
 
 // TestClient_InboundHMACRejected: an inbound envelope that fails HMAC
@@ -321,8 +327,16 @@ func TestResumingClient_DeliversAndAcks(t *testing.T) {
 
 // --- mode dispatch tests ---
 
+// stubMode is a minimal Mode for the additive-registration dispatch test
+// (the production placeholderMode was removed — real modes self-register
+// from their own init()).
+type stubMode struct{ name string }
+
+func (s stubMode) Name() string              { return s.name }
+func (s stubMode) Run(context.Context) error { return nil }
+
 func TestModeDispatch_KnownResolveUnknownErrors(t *testing.T) {
-	// Skeleton placeholders for the planned modes resolve.
+	// The real generic/cc modes self-register from their init().
 	for _, m := range []string{"generic", "cc"} {
 		ctor, err := Resolve(m)
 		if err != nil {
@@ -348,7 +362,7 @@ func TestModeDispatch_AdditiveRegistration(t *testing.T) {
 		t.Fatalf("mode %q should be unknown before registration", name)
 	}
 	Register(name, func(_ ClientConfig, _ int) (Mode, error) {
-		return placeholderMode{name: name}, nil
+		return stubMode{name: name}, nil
 	})
 	if _, err := Resolve(name); err != nil {
 		t.Fatalf("mode %q should resolve after additive Register: %v", name, err)
