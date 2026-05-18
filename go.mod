@@ -3,6 +3,7 @@ module github.com/nnemirovsky/peerbus
 go 1.25.0
 
 require (
+	github.com/coder/websocket v1.8.14
 	lukechampine.com/blake3 v1.4.1
 	modernc.org/sqlite v1.50.1
 )
