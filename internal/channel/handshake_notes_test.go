@@ -109,12 +109,12 @@ func TestHandshakeDocumentedSchema(t *testing.T) {
 			name: "push notification round-trips with content and string meta",
 			in:   samplePushNotification,
 			decode: func(b []byte) (any, error) {
-				var n ChannelPushNotification
+				var n PushNotification
 				err := json.Unmarshal(b, &n)
 				return n, err
 			},
 			check: func(t *testing.T, v any) {
-				n := v.(ChannelPushNotification)
+				n := v.(PushNotification)
 				if n.Method != PushMethod {
 					t.Fatalf("method = %q, want %q", n.Method, PushMethod)
 				}
@@ -133,7 +133,7 @@ func TestHandshakeDocumentedSchema(t *testing.T) {
 			name: "malformed push (no method) is rejected as not a valid push",
 			in:   malformedPushNotification,
 			decode: func(b []byte) (any, error) {
-				var n ChannelPushNotification
+				var n PushNotification
 				if err := json.Unmarshal(b, &n); err != nil {
 					return n, err
 				}

@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go vet ./...
+
+      - name: Run tests with coverage
+        run: go test ./... -race -timeout 120s -coverprofile=coverage.out
+
+      - name: Check coverage threshold
+        run: |
+          total=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $NF}' | tr -d '%')
+          if [ -z "$total" ]; then
+            echo "Failed to parse coverage from coverage.out"
+            exit 1
+          fi
+          echo "Total coverage: ${total}%"
+          # Floor is 60, not 70: peerbus is pure-Go with no cgo, and the
+          # adapter/mcp stdio paths (process lifecycle, push-wake, MCP
+          # framing) are exercised mostly by the integration suite and the
+          # manual interactive-Claude e2e, which a unit coverage profile
+          # cannot reach. They pull the total down from the broker/store
+          # core (which is well-covered). 60 is the stable floor below which
+          # something genuinely regressed; current total is ~67%.
+          if awk "BEGIN{exit !($total < 60)}"; then
+            echo "Coverage ${total}% is below 60% threshold"
+            exit 1
+          fi
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.out

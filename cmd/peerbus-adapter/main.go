@@ -64,11 +64,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	mode := fs.String("adapter", "", "adapter mode ("+strings.ReplaceAll(known, ", ", "|")+")")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: peerbus-adapter --adapter=<mode>\n\n")
-		fmt.Fprintf(stderr, "modes are resolved via the additive --adapter dispatch registry\n\n")
-		fmt.Fprintf(stderr, "broker connection is read from the environment:\n")
-		fmt.Fprintf(stderr, "  PEERBUS_URL PEERBUS_NAME PEERBUS_TOKEN PEERBUS_HMAC_SECRET\n\n")
-		fmt.Fprintf(stderr, "flags:\n")
+		_, _ = fmt.Fprintf(stderr, "usage: peerbus-adapter --adapter=<mode>\n\n")
+		_, _ = fmt.Fprintf(stderr, "modes are resolved via the additive --adapter dispatch registry\n\n")
+		_, _ = fmt.Fprintf(stderr, "broker connection is read from the environment:\n")
+		_, _ = fmt.Fprintf(stderr, "  PEERBUS_URL PEERBUS_NAME PEERBUS_TOKEN PEERBUS_HMAC_SECRET\n\n")
+		_, _ = fmt.Fprintf(stderr, "flags:\n")
 		fs.PrintDefaults()
 	}
 
@@ -76,27 +76,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintln(stdout, version.String())
+		_, _ = fmt.Fprintln(stdout, version.String())
 		return 0
 	}
 
 	if *mode == "" {
-		fmt.Fprintf(stderr, "peerbus-adapter: missing required --adapter=<mode> (one of: %s)\n", known)
+		_, _ = fmt.Fprintf(stderr, "peerbus-adapter: missing required --adapter=<mode> (one of: %s)\n", known)
 		return 2
 	}
 	ctor, err := adapter.Resolve(*mode)
 	if err != nil {
-		fmt.Fprintf(stderr, "peerbus-adapter: unknown adapter mode %q (one of: %s)\n", *mode, known)
+		_, _ = fmt.Fprintf(stderr, "peerbus-adapter: unknown adapter mode %q (one of: %s)\n", *mode, known)
 		return 2
 	}
 
 	cfg := envClientConfig()
 	if cfg.URL == "" {
-		fmt.Fprintln(stderr, "peerbus-adapter: PEERBUS_URL is required")
+		_, _ = fmt.Fprintln(stderr, "peerbus-adapter: PEERBUS_URL is required")
 		return 2
 	}
 	if cfg.Token == "" {
-		fmt.Fprintln(stderr, "peerbus-adapter: PEERBUS_TOKEN is required")
+		_, _ = fmt.Fprintln(stderr, "peerbus-adapter: PEERBUS_TOKEN is required")
 		return 2
 	}
 	// Fail fast on a missing/short HMAC secret. Without this the client
@@ -104,7 +104,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// forever (no progress, no signal to the operator). The bound is the
 	// same one the broker enforces (hmac.MinSecretLen).
 	if len(cfg.HMACSecret) < hmac.MinSecretLen {
-		fmt.Fprintf(stderr, "peerbus-adapter: PEERBUS_HMAC_SECRET must be at least %d bytes\n",
+		_, _ = fmt.Fprintf(stderr, "peerbus-adapter: PEERBUS_HMAC_SECRET must be at least %d bytes\n",
 			hmac.MinSecretLen)
 		return 2
 	}
@@ -113,13 +113,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// at broker register on every attempt → reconnect spin; fail fast
 	// instead. cc tolerates an empty name (it mints a unique one).
 	if *mode == "generic" && cfg.Name == "" {
-		fmt.Fprintln(stderr, "peerbus-adapter: PEERBUS_NAME is required for --adapter=generic")
+		_, _ = fmt.Fprintln(stderr, "peerbus-adapter: PEERBUS_NAME is required for --adapter=generic")
 		return 2
 	}
 
 	m, err := ctor(cfg, 0) // 0 => DefaultDedupeSize
 	if err != nil {
-		fmt.Fprintf(stderr, "peerbus-adapter: construct mode %q: %v\n", *mode, err)
+		_, _ = fmt.Fprintf(stderr, "peerbus-adapter: construct mode %q: %v\n", *mode, err)
 		return 1
 	}
 
@@ -130,7 +130,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	if err := m.Run(ctx); err != nil && ctx.Err() == nil {
-		fmt.Fprintf(stderr, "peerbus-adapter: mode %q exited: %v\n", *mode, err)
+		_, _ = fmt.Fprintf(stderr, "peerbus-adapter: mode %q exited: %v\n", *mode, err)
 		return 1
 	}
 	return 0

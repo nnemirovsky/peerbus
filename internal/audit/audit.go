@@ -26,9 +26,8 @@ import (
 	"fmt"
 	"sync"
 
-	"lukechampine.com/blake3"
-
 	"github.com/nnemirovsky/peerbus/internal/store"
+	"lukechampine.com/blake3"
 )
 
 // auditStore is the slice of internal/store the audit log needs. It keeps the
@@ -68,11 +67,6 @@ type Appender struct {
 
 // NewAppender returns an Appender backed by st.
 func NewAppender(st *store.Store) *Appender {
-	return &Appender{st: st}
-}
-
-// newAppenderFor is the testable constructor (any auditStore).
-func newAppenderFor(st auditStore) *Appender {
 	return &Appender{st: st}
 }
 

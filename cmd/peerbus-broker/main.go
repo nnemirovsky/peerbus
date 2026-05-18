@@ -42,12 +42,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	showVersion := fs.Bool("version", false, "print version and exit")
 	dbPath := fs.String("db", defaultDBPath, "path to the durable SQLite store")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: peerbus-broker [flags] [subcommand]\n\n")
-		fmt.Fprintf(stderr, "subcommands:\n")
-		fmt.Fprintf(stderr, "  serve           start the WebSocket broker (token auth + peer registry)\n")
-		fmt.Fprintf(stderr, "  audit verify    walk the blake3 audit hash-chain and report any break\n\n")
-		fmt.Fprintf(stderr, "serve config is loaded from PEERBUS_* env (LISTEN, TOKENS, HMAC_SECRET, DB)\n\n")
-		fmt.Fprintf(stderr, "flags:\n")
+		// Usage text to stderr: a write error here is not actionable
+		// (the process is already on its way out with a usage error).
+		_, _ = fmt.Fprintf(stderr, "usage: peerbus-broker [flags] [subcommand]\n\n")
+		_, _ = fmt.Fprintf(stderr, "subcommands:\n")
+		_, _ = fmt.Fprintf(stderr, "  serve           start the WebSocket broker (token auth + peer registry)\n")
+		_, _ = fmt.Fprintf(stderr, "  audit verify    walk the blake3 audit hash-chain and report any break\n\n")
+		_, _ = fmt.Fprintf(stderr, "serve config is loaded from PEERBUS_* env (LISTEN, TOKENS, HMAC_SECRET, DB)\n\n")
+		_, _ = fmt.Fprintf(stderr, "flags:\n")
 		fs.PrintDefaults()
 	}
 
@@ -55,13 +57,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintln(stdout, version.String())
+		_, _ = fmt.Fprintln(stdout, version.String())
 		return 0
 	}
 
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "peerbus-broker: a subcommand is required (serve | audit verify)")
+		_, _ = fmt.Fprintln(stderr, "peerbus-broker: a subcommand is required (serve | audit verify)")
 		fs.Usage()
 		return 2
 	}
@@ -72,7 +74,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "audit":
 		return runAudit(rest[1:], *dbPath, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "peerbus-broker: unknown subcommand %q\n", rest[0])
+		_, _ = fmt.Fprintf(stderr, "peerbus-broker: unknown subcommand %q\n", rest[0])
 		return 2
 	}
 }
@@ -82,27 +84,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 // was found, 2 means a usage/operational error.
 func runAudit(args []string, dbPath string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "verify" {
-		fmt.Fprintln(stderr, "usage: peerbus-broker [--db PATH] audit verify")
+		_, _ = fmt.Fprintln(stderr, "usage: peerbus-broker [--db PATH] audit verify")
 		return 2
 	}
 
 	st, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "peerbus-broker: open store %q: %v\n", dbPath, err)
+		_, _ = fmt.Fprintf(stderr, "peerbus-broker: open store %q: %v\n", dbPath, err)
 		return 2
 	}
 	defer func() { _ = st.Close() }()
 
 	brk, err := audit.Verify(st)
 	if err != nil {
-		fmt.Fprintf(stderr, "peerbus-broker: audit verify: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "peerbus-broker: audit verify: %v\n", err)
 		return 2
 	}
 	if brk != nil {
-		fmt.Fprintf(stdout, "audit chain BROKEN: %s\n", brk.Error())
+		_, _ = fmt.Fprintf(stdout, "audit chain BROKEN: %s\n", brk.Error())
 		return 1
 	}
-	fmt.Fprintln(stdout, "audit chain OK")
+	_, _ = fmt.Fprintln(stdout, "audit chain OK")
 	return 0
 }
 
@@ -114,13 +116,13 @@ func runAudit(args []string, dbPath string, stdout, stderr io.Writer) int {
 func runServe(dbPath string, stdout, stderr io.Writer) int {
 	cfg, err := broker.LoadConfig(broker.Config{DBPath: dbPath})
 	if err != nil {
-		fmt.Fprintf(stderr, "peerbus-broker: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "peerbus-broker: %v\n", err)
 		return 2
 	}
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "peerbus-broker: open store %q: %v\n", cfg.DBPath, err)
+		_, _ = fmt.Fprintf(stderr, "peerbus-broker: open store %q: %v\n", cfg.DBPath, err)
 		return 2
 	}
 	defer func() { _ = st.Close() }()
@@ -136,13 +138,13 @@ func runServe(dbPath string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	fmt.Fprintf(stdout, "peerbus-broker: serving on %s\n", cfg.ListenAddr)
+	_, _ = fmt.Fprintf(stdout, "peerbus-broker: serving on %s\n", cfg.ListenAddr)
 	if err := srv.ListenAndServe(ctx, cfg.ListenAddr); err != nil &&
 		!errorsIsContextCanceled(err) {
-		fmt.Fprintf(stderr, "peerbus-broker: serve: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "peerbus-broker: serve: %v\n", err)
 		return 2
 	}
-	fmt.Fprintln(stdout, "peerbus-broker: shut down cleanly")
+	_, _ = fmt.Fprintln(stdout, "peerbus-broker: shut down cleanly")
 	return 0
 }
 

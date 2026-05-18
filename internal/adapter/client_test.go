@@ -9,11 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nnemirovsky/peerbus/internal/broker"
 	hmacpkg "github.com/nnemirovsky/peerbus/internal/hmac"
 	"github.com/nnemirovsky/peerbus/internal/store"
 	"github.com/nnemirovsky/peerbus/internal/wire"
-
-	"github.com/nnemirovsky/peerbus/internal/broker"
 )
 
 // testSecret is a deliberately non-secret 32-byte fixture, same shape as
@@ -232,7 +231,7 @@ func TestResumingClient_ReconnectResumeDedup(t *testing.T) {
 
 	rc := NewResumingClient(f.cfg("drainer"), 64)
 
-	handler := func(hctx context.Context, env wire.Envelope) error {
+	handler := func(_ context.Context, env wire.Envelope) error {
 		mu.Lock()
 		consumed = append(consumed, env.ID)
 		n := len(consumed)

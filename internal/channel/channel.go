@@ -95,12 +95,15 @@ type busAdapter struct{ out OutboundBus }
 func (b busAdapter) Send(ctx context.Context, to string, body json.RawMessage) error {
 	return b.out.Send(ctx, to, body)
 }
+
 func (b busAdapter) Broadcast(ctx context.Context, body json.RawMessage) error {
 	return b.out.Broadcast(ctx, body)
 }
+
 func (b busAdapter) Peers(ctx context.Context) ([]string, error) {
 	return b.out.Peers(ctx)
 }
+
 func (b busAdapter) Drain(context.Context) ([]mcp.InboundMessage, error) {
 	return nil, nil
 }
@@ -135,7 +138,7 @@ func (s *Server) Serve(ctx context.Context) error { return s.mcp.Serve(ctx) }
 // to its text so the session sees plain text, otherwise the compact JSON is
 // passed through verbatim.
 func (s *Server) Deliver(in Inbound) {
-	s.mcp.Notify(PushMethod, ChannelPushParams{
+	s.mcp.Notify(PushMethod, PushParams{
 		Content: bodyAsText(in.Body),
 		Meta: map[string]string{
 			"from":   in.From,

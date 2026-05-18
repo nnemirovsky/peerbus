@@ -10,7 +10,6 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-
 	"github.com/nnemirovsky/peerbus/internal/broker"
 	bhmac "github.com/nnemirovsky/peerbus/internal/hmac"
 	"github.com/nnemirovsky/peerbus/internal/store"

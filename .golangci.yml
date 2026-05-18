@@ -1,0 +1,65 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - unparam
+    - revive
+    - errorlint
+    - recvcheck
+    - bodyclose
+
+  exclusions:
+    rules:
+      # internal/hmac and internal/version intentionally shadow stdlib
+      # package names. They are internal/ packages (never importable
+      # outside this module) and the names are the clearest description of
+      # what they hold (an HMAC envelope wrapper, the build version). The
+      # var-naming rule's stdlib-conflict check is noise here.
+      - path: internal/hmac/
+        linters:
+          - revive
+        text: "avoid package names that conflict"
+      - path: internal/version/
+        linters:
+          - revive
+        text: "avoid package names that conflict"
+      # Deliberate "wrapped sentinel + detail" error pattern:
+      # fmt.Errorf("%w ...: %v", ErrSentinel, ..., detailErr). Go's fmt
+      # allows exactly one %w; the sentinel is the unwrap target and the
+      # detail is intentionally non-wrapping context. errorlint's
+      # non-wrapping-verb check is a false positive for this shape.
+      - linters:
+          - errorlint
+        text: "non-wrapping format verb for fmt.Errorf"
+      # Test files legitimately deref values right after a nil-check in
+      # table-driven cases; SA5011 is noise there.
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: "SA5011"
+      # Test helpers idiomatically take *testing.T first (t.Helper
+      # convention), so ctx is the second arg. revive's
+      # context-as-argument is a production-API style nit that does not
+      # apply to test scaffolding; reordering 80+ call sites adds churn
+      # and risk for zero behavioral gain.
+      - path: _test\.go
+        linters:
+          - revive
+        text: "context-as-argument"
+      # Test callbacks/helpers bound to a fixed handler signature (e.g.
+      # func(context.Context, wire.Envelope) error) or driven by a single
+      # in-test value trip unparam ("result always nil" / "param always
+      # X"). The signature is dictated by the interface under test, not
+      # free to change; flagging it is a false positive in tests only.
+      - path: _test\.go
+        linters:
+          - unparam
+
+formatters:
+  enable:
+    - gci

@@ -36,10 +36,12 @@ services:
   peerbus-broker:
     image: peerbus-broker:latest
     # Build from the repo root if you are not pulling a prebuilt image.
-    # The broker binary is `peerbus-broker serve`.
+    # The canonical broker image is the repo-root Dockerfile (the same one
+    # the Docker release workflow publishes to ghcr.io). The broker binary
+    # is `peerbus-broker serve`.
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
+      dockerfile: Dockerfile
     command: ["serve"]
     restart: always
     # The broker binds PEERBUS_LISTEN (host:port). Publish that port so

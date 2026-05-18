@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-
 	bhmac "github.com/nnemirovsky/peerbus/internal/hmac"
 	"github.com/nnemirovsky/peerbus/internal/store"
 	"github.com/nnemirovsky/peerbus/internal/wire"
@@ -41,7 +40,12 @@ func dial(t *testing.T, url string) (*websocket.Conn, context.Context) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
-	c, _, err := websocket.Dial(ctx, url, nil)
+	c, resp, err := websocket.Dial(ctx, url, nil)
+	if resp != nil && resp.Body != nil {
+		// The WS handshake response body carries no useful payload; close
+		// it so the underlying connection can be reused/released.
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

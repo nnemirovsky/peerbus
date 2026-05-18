@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-
 	"github.com/nnemirovsky/peerbus/internal/audit"
 	bhmac "github.com/nnemirovsky/peerbus/internal/hmac"
 	"github.com/nnemirovsky/peerbus/internal/wire"

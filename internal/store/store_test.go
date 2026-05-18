@@ -65,9 +65,9 @@ func TestEnqueueAndDedupe(t *testing.T) {
 			switch {
 			case tc.wantErr == nil && err != nil:
 				t.Fatalf("Enqueue: unexpected error %v", err)
-			case tc.wantErr == errSentinelAny && err == nil:
+			case errors.Is(tc.wantErr, errSentinelAny) && err == nil:
 				t.Fatal("Enqueue: want some error, got nil")
-			case tc.wantErr != nil && tc.wantErr != errSentinelAny && !errors.Is(err, tc.wantErr):
+			case tc.wantErr != nil && !errors.Is(tc.wantErr, errSentinelAny) && !errors.Is(err, tc.wantErr):
 				t.Fatalf("Enqueue: want %v, got %v", tc.wantErr, err)
 			}
 		})

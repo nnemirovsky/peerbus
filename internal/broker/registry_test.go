@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"errors"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -77,7 +78,7 @@ func TestRegistry_DifferentTokenReject(t *testing.T) {
 
 	newc := &fakeConn{}
 	_, err := r.Bind("alice", "tok-B", newc)
-	if err != ErrNameClaimed {
+	if !errors.Is(err, ErrNameClaimed) {
 		t.Fatalf("different-token re-bind err = %v, want ErrNameClaimed", err)
 	}
 	if old.closed.Load() {

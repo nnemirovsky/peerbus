@@ -128,7 +128,7 @@ func TestResumingClient_HandlerErrorForgetRedelivers(t *testing.T) {
 	}
 
 	var calls int
-	handler := func(_ context.Context, e wire.Envelope) error {
+	handler := func(_ context.Context, _ wire.Envelope) error {
 		calls++
 		if calls == 1 {
 			// First delivery: refuse. surface must forget the id so a

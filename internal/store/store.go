@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	// Pure-Go SQLite driver (no cgo); registers the "sqlite" database/sql
+	// driver as an import side effect.
 	_ "modernc.org/sqlite"
 )
 

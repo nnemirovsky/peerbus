@@ -1,19 +1,20 @@
-# Binaries
-/bin/
-/dist/
-coverage.html
+# VCS
+.git
+.github
+
+# Docs / markdown (not needed in the broker image)
+docs
+*.md
+
+# Build artifacts
+bin/
+dist/
 /peerbus-broker
 /peerbus-adapter
 *.exe
 *.test
-*.out
 
-# Go
-/vendor/
-go.work
-go.work.sum
-
-# Databases (durable SQLite store + WAL/SHM sidecars)
+# Durable SQLite store + WAL/SHM sidecars
 *.db
 *.db-wal
 *.db-shm
@@ -22,6 +23,7 @@ go.work.sum
 
 # Coverage
 coverage.out
+coverage.html
 coverage.txt
 *.coverprofile
 

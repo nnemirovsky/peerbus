@@ -181,10 +181,10 @@ func TestConcurrentAppendKeepsChainValid(t *testing.T) {
 	const n = 50
 	errCh := make(chan error, n)
 	for i := 0; i < n; i++ {
-		go func(i int) {
+		go func() {
 			_, err := ap.Append([]byte(`{"e":"concurrent"}`))
 			errCh <- err
-		}(i)
+		}()
 	}
 	for i := 0; i < n; i++ {
 		if err := <-errCh; err != nil {

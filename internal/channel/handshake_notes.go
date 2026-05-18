@@ -69,7 +69,7 @@ type InitializeResult struct {
 	ServerInfo      ServerInfo   `json:"serverInfo"`
 }
 
-// ChannelPushParams is the `params` of a `notifications/claude/channel`
+// PushParams is the `params` of a `notifications/claude/channel`
 // push (DOCUMENTED — CHANNELS_SCHEMA.md §3):
 //
 //   - Content (required): the event body, delivered as the text content of
@@ -78,18 +78,18 @@ type InitializeResult struct {
 //     <channel> tag. ALL VALUES MUST BE STRINGS. Keys must be valid
 //     identifiers (letters, digits, underscores only); keys with hyphens or
 //     special characters are silently dropped by Claude Code.
-type ChannelPushParams struct {
+type PushParams struct {
 	Content string            `json:"content"`
 	Meta    map[string]string `json:"meta,omitempty"`
 }
 
-// ChannelPushNotification is a full JSON-RPC notification frame that
+// PushNotification is a full JSON-RPC notification frame that
 // push-wakes an idle session. A notification has no `id`.
 //
 // Method MUST equal PushMethod for the frame to be a valid push; the
 // round-trip test treats a missing/empty Method as the malformed case.
-type ChannelPushNotification struct {
-	JSONRPC string            `json:"jsonrpc"`
-	Method  string            `json:"method"`
-	Params  ChannelPushParams `json:"params"`
+type PushNotification struct {
+	JSONRPC string     `json:"jsonrpc"`
+	Method  string     `json:"method"`
+	Params  PushParams `json:"params"`
 }

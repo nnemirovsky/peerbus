@@ -33,7 +33,6 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
-
 	"github.com/nnemirovsky/peerbus/internal/audit"
 	"github.com/nnemirovsky/peerbus/internal/store"
 	"github.com/nnemirovsky/peerbus/internal/wire"

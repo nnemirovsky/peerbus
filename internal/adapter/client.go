@@ -22,7 +22,6 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
-
 	"github.com/nnemirovsky/peerbus/internal/hmac"
 	"github.com/nnemirovsky/peerbus/internal/wire"
 )

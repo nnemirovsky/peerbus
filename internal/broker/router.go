@@ -84,23 +84,23 @@ func (s *Server) auditEvent(kind, id, from, to string) {
 }
 
 // deliverTo pushes one already-persisted message to a recipient if that
-// recipient is currently connected, and marks it delivered. It returns
-// true iff the frame was written to a live connection. If the recipient
-// is offline the row is left undelivered (the offline/pending path);
-// flushPending will pick it up on the recipient's next register.
-func (s *Server) deliverTo(ctx context.Context, recipient string, m store.Message) bool {
+// recipient is currently connected, and marks it delivered. If the
+// recipient is offline (or the frame cannot be written) the row is left
+// undelivered (the offline/pending path); flushPending will pick it up on
+// the recipient's next register.
+func (s *Server) deliverTo(ctx context.Context, recipient string, m store.Message) {
 	conn, ok := s.registry.Get(recipient)
 	if !ok {
-		return false
+		return
 	}
 	pc, ok := conn.(*peerConn)
 	if !ok {
-		return false
+		return
 	}
 	var env wire.Envelope
 	if err := json.Unmarshal(m.Envelope, &env); err != nil {
 		s.log.Warn("skip unparseable envelope", "id", m.ID, "err", err)
-		return false
+		return
 	}
 	del := wire.Deliver{
 		ProtocolVersion: wire.ProtocolVersion,
@@ -115,13 +115,12 @@ func (s *Server) deliverTo(ctx context.Context, recipient string, m store.Messag
 	}
 	if err := pc.writeJSON(ctx, del); err != nil {
 		s.log.Warn("deliver failed", "id", m.ID, "to", recipient, "err", err)
-		return false
+		return
 	}
 	if err := s.store.MarkDelivered(m.ID); err != nil {
 		s.log.Warn("mark delivered failed", "id", m.ID, "err", err)
 	}
 	s.auditEvent("deliver", m.ID, m.From, recipient)
-	return true
 }
 
 // routeEnvelope handles a post-handshake data-channel Envelope from pc.
