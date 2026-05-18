@@ -50,6 +50,16 @@ func Register(name string, ctor Constructor) {
 	modeReg[name] = ctor
 }
 
+// unregisterMode removes the constructor for name (no-op if absent). It
+// exists only so tests that Register a throwaway mode can restore the
+// package-global registry to its prior state (t.Cleanup), keeping the
+// registry repeat-safe under `go test -count=N`.
+func unregisterMode(name string) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	delete(modeReg, name)
+}
+
 // Resolve returns the constructor registered for name, or a clear error
 // (listing the known modes) for an unknown mode.
 func Resolve(name string) (Constructor, error) {

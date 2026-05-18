@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -316,13 +317,15 @@ func TestRouter_BroadcastUnackedReconnectDrainsWithDeliveryKeyThenAckStops(t *te
 	_ = r2.Close(websocket.StatusNormalClosure, "")
 	time.Sleep(100 * time.Millisecond)
 
-	// Reconnect again: the acked broadcast row must NOT redeliver (a short
-	// read times out, NOT a close). Pre-fix this redelivered forever.
+	// Reconnect again: the acked broadcast row must NOT redeliver. The only
+	// acceptable outcome is the short read timing out (context deadline) —
+	// NOT a successful read (that *is* the redelivery this test catches) and
+	// NOT a connection close. Pre-fix this redelivered forever.
 	r3, r3ctx := registerOK(t, url, "recipient", "tok")
 	rctx, cancel := context.WithTimeout(r3ctx, 500*time.Millisecond)
 	defer cancel()
-	if _, _, err := r3.Read(rctx); websocket.CloseStatus(err) != -1 {
-		t.Fatalf("acked broadcast copy was redelivered (infinite-redelivery bug) or conn closed: %v", err)
+	if _, _, err := r3.Read(rctx); err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("acked broadcast copy was redelivered (infinite-redelivery bug) or conn closed; want context.DeadlineExceeded, got: %v", err)
 	}
 }
 

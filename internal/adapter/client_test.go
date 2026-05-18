@@ -364,6 +364,7 @@ func TestModeDispatch_AdditiveRegistration(t *testing.T) {
 	Register(name, func(_ ClientConfig, _ int) (Mode, error) {
 		return stubMode{name: name}, nil
 	})
+	t.Cleanup(func() { unregisterMode(name) })
 	if _, err := Resolve(name); err != nil {
 		t.Fatalf("mode %q should resolve after additive Register: %v", name, err)
 	}

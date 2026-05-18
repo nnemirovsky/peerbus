@@ -144,6 +144,13 @@ not by `envelope.id` — that is how each per-recipient broadcast copy is
 independently ackable without mutating (and thus invalidating) the signed
 envelope.
 
+The broker **MUST** set `delivery_key` on every `deliver` frame: for a direct
+message it is `envelope.id`; for a broadcast copy it is
+`"<original-id>|<recipient-name>"`. A `deliver` frame with an empty or absent
+`delivery_key` is a **protocol error**: the client **MUST drop the message
+without acking** it — it cannot be acked, there is no row key to ack — exactly
+as it drops an envelope that fails HMAC verification (§4).
+
 On receipt the client MUST: HMAC-verify the envelope (§4) — which verifies
 for broadcast too, because the envelope is the sender's verbatim signed bytes
 — run it through the dedupe cache keyed on `envelope.id` (§5), surface it to
@@ -306,6 +313,11 @@ An adapter MUST implement these to be correct:
   late-registering peers never receive a past broadcast.
 - **Ack-after-consume.** Send `ack` only after the host has consumed the
   message. Unacked ⇒ redelivered on next reconnect (then dedupe-suppressed).
+- **`delivery_key` is mandatory and load-bearing for acking.** Every
+  `deliver` frame carries a non-empty `delivery_key` (§2.4); the client acks
+  by it. A `deliver` frame with an empty/absent `delivery_key` is a protocol
+  error — the client drops it without acking (it has no row key to ack),
+  exactly as it drops an HMAC-verify failure.
 
 ### Reconnect / resume
 
