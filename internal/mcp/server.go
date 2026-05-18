@@ -96,6 +96,13 @@ type Server struct {
 	wmu sync.Mutex // serialises writes to out
 	out *bufio.Writer
 	in  *bufio.Reader
+	// inCloser is the underlying input if it is an io.Closer (os.Stdin is).
+	// Serve closes it on ctx cancellation so the blocked, non-ctx-aware
+	// readMessage on stdin unblocks and Serve returns promptly instead of
+	// hanging until SIGKILL (the adapter shutdown-hang fix). nil when the
+	// input is not a Closer (e.g. an io.Pipe reader in tests, which is
+	// closed by the test harness on cancel anyway).
+	inCloser io.Closer
 
 	initialized bool
 
@@ -163,6 +170,9 @@ func NewServer(bus Bus, in io.Reader, out io.Writer, opts ...ServerOption) *Serv
 		out:        bufio.NewWriter(out),
 		serverName: "peerbus-generic-adapter",
 	}
+	if c, ok := in.(io.Closer); ok {
+		s.inCloser = c
+	}
 	for _, o := range opts {
 		o(s)
 	}
@@ -188,22 +198,66 @@ func (s *Server) Notify(method string, params any) {
 // Serve runs the read/dispatch loop until ctx is cancelled, stdin reaches
 // EOF, or an unrecoverable framing error occurs. A clean EOF (host closed
 // the pipe) returns nil; ctx cancellation returns ctx.Err().
+//
+// readMessage blocks on stdin and is NOT itself ctx-aware, so the loop must
+// not call it inline and only check ctx at the top — on SIGTERM with stdin
+// held open that would hang until SIGKILL (the adapter shutdown-hang bug).
+// Instead each read runs in a goroutine feeding a channel and Serve selects
+// on ctx.Done(); on cancellation it closes the underlying input (os.Stdin)
+// so the in-flight read unblocks, then returns ctx.Err() promptly. The
+// per-read goroutine is safe because reads are strictly sequential (one peer,
+// one outstanding read at a time) — the next read is only started after the
+// previous result is consumed.
 func (s *Server) Serve(ctx context.Context) error {
+	type readResult struct {
+		raw []byte
+		err error
+	}
 	for {
 		if ctx.Err() != nil {
+			s.closeInput()
 			return ctx.Err()
 		}
-		raw, err := s.readMessage()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
+		ch := make(chan readResult, 1)
+		go func() {
+			raw, err := s.readMessage()
+			ch <- readResult{raw, err}
+		}()
+		select {
+		case <-ctx.Done():
+			// Unblock the in-flight readMessage so its goroutine exits and
+			// Serve returns immediately instead of hanging on idle stdin.
+			s.closeInput()
+			<-ch // reap the goroutine (read now fails on the closed input)
+			return ctx.Err()
+		case r := <-ch:
+			if r.err != nil {
+				if errors.Is(r.err, io.EOF) {
+					return nil
+				}
+				// A read error after ctx cancellation is the expected
+				// consequence of closeInput, not a real failure.
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return r.err
 			}
-			return err
+			if len(r.raw) == 0 {
+				continue
+			}
+			s.dispatch(ctx, r.raw)
 		}
-		if len(raw) == 0 {
-			continue
-		}
-		s.dispatch(ctx, raw)
+	}
+}
+
+// closeInput closes the underlying input if it is an io.Closer (os.Stdin in
+// the real binary), unblocking a readMessage stuck on an idle stdin. A nil
+// closer (non-Closer input, e.g. test pipes) is a no-op — those are closed by
+// the harness on cancel. Safe to call more than once: an already-closed
+// stdin just returns an error we ignore.
+func (s *Server) closeInput() {
+	if s.inCloser != nil {
+		_ = s.inCloser.Close()
 	}
 }
 

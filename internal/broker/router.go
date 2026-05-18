@@ -236,6 +236,15 @@ func (s *Server) routeBroadcast(ctx context.Context, from string, env wire.Envel
 		case errors.Is(err, store.ErrDuplicateID):
 			continue
 		case errors.Is(err, store.ErrUnknownPeer):
+			// The recipient was never a registered peer, so the store
+			// cannot durably hold this fan-out copy and it is dropped for
+			// that recipient. With store.Register now ordered before
+			// registry.Bind (see handshake, MODERATE-R6) a registry-listed
+			// name always has a peer row, so this should not happen for a
+			// genuinely-registered recipient; log it (NOT a silent continue)
+			// so a real loss is observable rather than invisible.
+			s.log.Warn("broadcast copy dropped: recipient not a known peer",
+				"id", rowID, "to", r)
 			continue
 		default:
 			s.log.Warn("broadcast enqueue failed", "id", rowID, "err", err)

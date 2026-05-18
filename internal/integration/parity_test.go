@@ -545,16 +545,29 @@ func TestParity_BroadcastFanOutSenderExcluded(t *testing.T) {
 		t.Fatalf("broadcast body = %s, want {\"announce\":1}", env.Body)
 	}
 
-	// (3) The sender is EXCLUDED — re-binding "caster" with a raw client
-	// and reading must surface nothing (no pending broadcast copy for the
-	// sender), so Recv times out rather than returning a delivery.
-	selfRaw := f.rawClient(ctx, "caster")
-	defer selfRaw.Close()
-	recvCtx, recvCancel := context.WithTimeout(ctx, 800*time.Millisecond)
-	defer recvCancel()
-	if d, err := selfRaw.Recv(recvCtx); err == nil {
-		t.Fatalf("sender received its own broadcast (id=%s from=%s) — fan-out exclusion broken",
-			d.Envelope.ID, d.Envelope.From)
+	// (3) The sender is EXCLUDED. Assert this via the SENDER's OWN live bus
+	// (the still-running "caster" genericPeer) draining nothing — NOT by
+	// opening a competing same-token raw client named "caster". The old
+	// approach was ~50% flaky under -race: the broker's same-token takeover
+	// closed the still-running generic "caster", whose resume loop then
+	// redialed + re-registered "caster" and took over the brand-new raw
+	// conn mid-handshake (EOF). Draining the existing bus is deterministic:
+	// the broadcast had to fan out before rxBus/rxRaw could receive it
+	// (asserted above), and the sender is never enqueued a copy, so its
+	// drain stays empty.
+	deadline := time.Now().Add(800 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		self, derr := caster.drain(ctx)
+		if derr != nil {
+			t.Fatalf("sender self-drain failed: %v", derr)
+		}
+		for _, m := range self {
+			if m.From == "caster" && string(m.Body) == `{"announce":1}` {
+				t.Fatalf("sender received its own broadcast (id=%s from=%s) — fan-out exclusion broken",
+					m.ID, m.From)
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -653,6 +666,77 @@ func TestParity_OfflinePersistenceThenDrain(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("offline-queued message not delivered on next session; drained=%+v", msgs)
+	}
+}
+
+// TestParity_BroadcastDrainsOnceAndAcksNoInfiniteRedelivery is the
+// CRITICAL-R1 integration regression. A real generic recipient AND a real cc
+// recipient are ONLINE when a broadcast is sent (broadcast has no backfill —
+// it fans only to currently-registered peers). Each receives the broadcast
+// copy EXACTLY once, the shared resume loop acks it under the per-recipient
+// DeliveryKey ("<origID>|<peer>"), and the broker queue then has NO
+// redeliverable row left — pre-fix the ack referenced the original signed id
+// (a no-op on the composite row key) so RequeueUnacked would resurrect the
+// row and it redelivered on every reconnect forever.
+func TestParity_BroadcastDrainsOnceAndAcksNoInfiniteRedelivery(t *testing.T) {
+	f := newBrokerFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Both recipients ONLINE before the broadcast (no-backfill model).
+	grx := newGenericPeer(t, f, "grx")
+	cc, _ := newCCPeer(t, f, "cc-rx")
+
+	caster := f.rawClient(ctx, "caster")
+	defer caster.Close()
+	if err := caster.Broadcast(ctx, "bc-1",
+		time.Now().UTC().Format(time.RFC3339Nano), "peer-bus",
+		json.RawMessage(`{"announce":"bcast"}`)); err != nil {
+		t.Fatalf("broadcast: %v", err)
+	}
+
+	// Generic recipient surfaces the broadcast exactly once; the resume
+	// loop acks it under the per-recipient DeliveryKey.
+	gmsgs := grx.drainUntil(ctx, 8*time.Second)
+	gCount := 0
+	for _, m := range gmsgs {
+		if m.From == "caster" && string(m.Body) == `{"announce":"bcast"}` {
+			gCount++
+		}
+	}
+	if gCount != 1 {
+		t.Fatalf("generic recipient surfaced the broadcast %d times, want exactly 1: %+v", gCount, gmsgs)
+	}
+
+	// cc recipient: exactly one claude/channel push (resume loop acks under
+	// DeliveryKey — pre-fix a no-op ack meant endless re-push).
+	frame := cc.readFrame()
+	var pf pushFrame
+	if err := json.Unmarshal(frame, &pf); err != nil {
+		t.Fatalf("cc push decode: %v (%s)", err, frame)
+	}
+	if pf.Method != "notifications/claude/channel" || pf.Params.Meta["from"] != "caster" {
+		t.Fatalf("cc push = %s, want a claude/channel push from caster", frame)
+	}
+	if dup, ok := cc.readFrameNoFail(500 * time.Millisecond); ok {
+		t.Fatalf("cc recipient got a SECOND broadcast push (infinite-redelivery bug): %s", dup)
+	}
+
+	// Let the consume-then-ack settle, then assert the broker has NO
+	// redeliverable broadcast row for either recipient. RequeueUnacked
+	// resurrects delivered-but-UNACKED rows; if the ack landed under the
+	// correct per-recipient DeliveryKey it returns 0 (nothing to redeliver).
+	// Pre-fix the ack was a no-op and this would resurrect the row → the
+	// message redelivered on every reconnect forever.
+	time.Sleep(400 * time.Millisecond)
+	for _, name := range []string{"grx", "cc-rx"} {
+		req, err := f.st.RequeueUnacked(name)
+		if err != nil {
+			t.Fatalf("RequeueUnacked(%s): %v", name, err)
+		}
+		if req != 0 {
+			t.Fatalf("RequeueUnacked(%s) resurrected %d unacked rows — broadcast copy never acked under its DeliveryKey (infinite-redelivery bug)", name, req)
+		}
 	}
 }
 

@@ -107,13 +107,21 @@ turn/correlation id — CHANNELS_SCHEMA.md §4).
 
 ## 7. (Optional) broadcast sanity
 
-From peer 2, `bus.broadcast` a message. The cc session should NOT wake from
-its own broadcast copy if it was the sender; a broadcast from a *different*
-peer is expected to be HMAC-rejected and SKIPPED (logged at debug, no
-notification, no crash) — this is the known broker-rewrites-broadcast-id
-limitation documented in `internal/adapter/cc.go`, identical to the generic
-adapter, tracked for the review phase / Task 12. Direct messages are the
-verified push-wake path.
+From peer 2, `bus.broadcast` a message. A broadcast from a *different* peer
+now wakes the cc session exactly like a direct message: the broker delivers
+the sender's **verbatim signed envelope** (`to:"*"`, original id, original
+HMAC) and the per-recipient routing/ack identity rides on the
+`wire.Deliver.delivery_key` field, OUTSIDE the HMAC canonical subset — so the
+copy verifies end-to-end and produces a `notifications/claude/channel` push.
+The session is NOT woken by its OWN broadcast copy (sender exclusion: the
+broker never fans a broadcast back to its sender). Direct and broadcast are
+now both verified end-to-end push-wake paths.
+
+(Historical note: an earlier broker rewrote the signed id/to per recipient,
+which broke broadcast HMAC and forced a log-and-skip. That has been fixed —
+the broker no longer mutates the signed envelope; the parity test
+`TestParity_BroadcastFanOutSenderExcluded` now hard-asserts real delivery +
+end-to-end verification.)
 
 ## Pass criteria
 

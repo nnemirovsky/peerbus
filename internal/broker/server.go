@@ -31,7 +31,6 @@ import (
 	"net"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/coder/websocket"
 
@@ -219,6 +218,26 @@ func (s *Server) handshake(ctx context.Context, pc *peerConn) (string, bool) {
 		return "", false
 	}
 
+	// Persist the peer durably BEFORE making it registry-visible. Ordering
+	// rationale (MODERATE-R6): registry.Bind makes the name routable; if a
+	// concurrent routeBroadcast/routeDirect for this name ran in the window
+	// between Bind and a later store.Register, store.Enqueue would return
+	// ErrUnknownPeer (the peer row does not exist yet) and the message would
+	// be silently dropped — a permanent loss of a message addressed to a
+	// peer during its FIRST-EVER registration. Registering first closes that
+	// window: by the time the name is routable its peer row already exists,
+	// so Enqueue can always durably hold a message for it. store.Register is
+	// idempotent (ON CONFLICT DO UPDATE) and does NOT affect the live-conn
+	// same-token takeover (that is purely registry.Bind), so running it
+	// before Bind is takeover-safe. A pre-Bind Register for a name that then
+	// fails Bind with ErrNameClaimed only persists a benign "name seen" row
+	// (no access is granted — the token gate is registry.Bind, which still
+	// rejects); for ErrNameClaimed the row already existed anyway.
+	if err := s.store.Register(store.Peer{Name: reg.Name}); err != nil {
+		pc.closeNormal(websocket.StatusInternalError, "peer persistence failed")
+		return "", false
+	}
+
 	// Bind in the registry: same-token => takeover (old conn closed by the
 	// registry), different-token => reject.
 	takenOver, _, err := s.registry.Bind(reg.Name, reg.Token, pc)
@@ -231,15 +250,10 @@ func (s *Server) handshake(ctx context.Context, pc *peerConn) (string, bool) {
 		return "", false
 	}
 
-	// Persist the peer durably and flush its queue. RequeueUnacked +
-	// PendingFor together guarantee that a message enqueued or left
-	// in-flight during a same-token takeover window falls to the offline/
-	// pending store path and is delivered to the NEW connection.
-	if err := s.store.Register(store.Peer{Name: reg.Name}); err != nil {
-		s.registry.Remove(reg.Name, pc)
-		pc.closeNormal(websocket.StatusInternalError, "peer persistence failed")
-		return "", false
-	}
+	// Flush the peer's queue. RequeueUnacked + PendingFor together
+	// guarantee that a message enqueued or left in-flight during a
+	// same-token takeover window falls to the offline/pending store path
+	// and is delivered to the NEW connection.
 	if _, err := s.store.RequeueUnacked(reg.Name); err != nil {
 		s.log.Warn("requeue unacked failed", "name", reg.Name, "err", err)
 	}
@@ -306,7 +320,16 @@ func (s *Server) flushPending(ctx context.Context, pc *peerConn) {
 		del := wire.Deliver{
 			ProtocolVersion: wire.ProtocolVersion,
 			Type:            wire.ControlDeliver,
-			Envelope:        env,
+			// DeliveryKey is the durable per-recipient row key (m.ID),
+			// IDENTICAL to deliverTo. For a direct message it equals
+			// env.ID; for a broadcast copy it is "<origID>|<recipient>"
+			// while env stays the sender's verbatim signed envelope. The
+			// recipient acks by this key — omitting it here let a
+			// reconnect-drained broadcast copy be acked under the original
+			// signed id (a no-op on the composite row key), so the row was
+			// never acked and redelivered forever on every reconnect.
+			DeliveryKey: m.ID,
+			Envelope:    env,
 		}
 		if err := pc.writeJSON(ctx, del); err != nil {
 			s.log.Warn("deliver pending failed", "id", m.ID, "err", err)
@@ -365,17 +388,27 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	go func() { errCh <- hs.ListenAndServe() }()
 	select {
 	case <-ctx.Done():
-		// Graceful shutdown with a bounded drain window: stop accepting new
-		// connections and let in-flight WS writes finish rather than
-		// hard-closing every socket mid-frame. Displaced clients reconnect
-		// + resume regardless (the adapter treats any drop as redial), but
-		// a clean Shutdown avoids tearing a delivery mid-write and lets the
-		// listener release the port deterministically. If the drain exceeds
-		// the deadline we fall back to a hard Close.
-		shCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := hs.Shutdown(shCtx); err != nil {
-			_ = hs.Close()
+		// What Shutdown actually does here (corrected — the previous comment
+		// overstated it): every broker connection is a HIJACKED WebSocket,
+		// and net/http does NOT track hijacked conns. http.Server.Shutdown
+		// therefore closes the listener (stop accepting new conns) and waits
+		// only on idle non-hijacked conns — for this server that set is
+		// effectively empty, so Shutdown returns almost immediately. It does
+		// NOT drain or bound the in-flight WS writes.
+		//
+		// The real WS teardown is driven by the BaseContext: every
+		// ServeHTTP runs under `ctx` (set via BaseContext above), so when
+		// ctx is cancelled each connection's serve loop observes
+		// <-ctx.Done() and closes its socket itself. Displaced clients
+		// reconnect + resume regardless (the adapter treats any drop as
+		// redial). A previous 5s timeout + hs.Close() fallback were inert
+		// for hijacked conns (Shutdown does not block on them and never
+		// returns an error to trigger the fallback) and have been removed
+		// as dead code. We still call Shutdown to release the listening
+		// socket deterministically, then wait for ListenAndServe to return.
+		if err := hs.Shutdown(context.Background()); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
+			s.log.Warn("broker shutdown", "err", err)
 		}
 		<-errCh
 		return ctx.Err()

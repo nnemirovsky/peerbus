@@ -629,3 +629,46 @@ func mustSlice(v any) []any {
 	s, _ := v.([]any)
 	return s
 }
+
+// idleBus is a no-op Bus for the shutdown test (no broker needed — the test
+// asserts Serve returns on ctx cancel while blocked on idle stdin, which is
+// independent of bus behaviour).
+type idleBus struct{}
+
+func (idleBus) Send(context.Context, string, json.RawMessage) error { return nil }
+func (idleBus) Broadcast(context.Context, json.RawMessage) error    { return nil }
+func (idleBus) Peers(context.Context) ([]string, error)             { return nil, nil }
+func (idleBus) Drain(context.Context) ([]mcp.InboundMessage, error) { return nil, nil }
+
+// TestServeReturnsPromptlyOnCtxCancelWithIdleStdin is the MAJOR-R4 regression:
+// readMessage blocks on stdin and is not ctx-aware; before the fix, Serve
+// checked ctx only at the loop top and then blocked forever in readMessage on
+// an idle pipe, so a SIGTERM never made Serve (and thus the adapter mode's
+// Run) return — it hung until SIGKILL. Serve must now return ~immediately
+// when ctx is cancelled even with a blocked, idle input.
+func TestServeReturnsPromptlyOnCtxCancelWithIdleStdin(t *testing.T) {
+	// An io.Pipe reader with NO writer blocks readMessage indefinitely —
+	// exactly the idle-stdin condition. *io.PipeReader is an io.Closer, so
+	// Serve's closeInput unblocks it on cancel (mirrors os.Stdin).
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+
+	srv := mcp.NewServer(idleBus{}, pr, io.Discard)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+
+	// Let Serve get firmly blocked inside readMessage, then cancel.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+			t.Fatalf("Serve returned %v, want a context-cancelled error", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve did NOT return within 3s of ctx cancel — adapter shutdown hang regressed")
+	}
+}

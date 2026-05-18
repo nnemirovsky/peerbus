@@ -33,6 +33,7 @@ import (
 	"syscall"
 
 	"github.com/nnemirovsky/peerbus/internal/adapter"
+	"github.com/nnemirovsky/peerbus/internal/hmac"
 	"github.com/nnemirovsky/peerbus/internal/version"
 )
 
@@ -96,6 +97,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if cfg.Token == "" {
 		fmt.Fprintln(stderr, "peerbus-adapter: PEERBUS_TOKEN is required")
+		return 2
+	}
+	// Fail fast on a missing/short HMAC secret. Without this the client
+	// treats hmac.ErrShortSecret as a transient error and reconnect-spins
+	// forever (no progress, no signal to the operator). The bound is the
+	// same one the broker enforces (hmac.MinSecretLen).
+	if len(cfg.HMACSecret) < hmac.MinSecretLen {
+		fmt.Fprintf(stderr, "peerbus-adapter: PEERBUS_HMAC_SECRET must be at least %d bytes\n",
+			hmac.MinSecretLen)
+		return 2
+	}
+	// Generic mode binds a fixed peer name and has no auto-name fallback
+	// (only cc auto-generates one). An empty PEERBUS_NAME there is rejected
+	// at broker register on every attempt → reconnect spin; fail fast
+	// instead. cc tolerates an empty name (it mints a unique one).
+	if *mode == "generic" && cfg.Name == "" {
+		fmt.Fprintln(stderr, "peerbus-adapter: PEERBUS_NAME is required for --adapter=generic")
 		return 2
 	}
 

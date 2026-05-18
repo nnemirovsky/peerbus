@@ -267,6 +267,65 @@ func TestRouter_SendToUnknownNameQueuedThenDelivered(t *testing.T) {
 	}
 }
 
+// TestRouter_BroadcastUnackedReconnectDrainsWithDeliveryKeyThenAckStops is
+// the CRITICAL-R1 regression. A broadcast recipient that is ONLINE at send
+// time receives the copy but drops WITHOUT acking; on reconnect flushPending
+// MUST redeliver it carrying the per-recipient DeliveryKey ("<origID>|<peer>")
+// — pre-fix flushPending omitted DeliveryKey, the client fell back to
+// Envelope.ID, the broker MarkAcked'd the original signed id (a no-op on the
+// composite row key), the row stayed unacked and was redelivered on EVERY
+// reconnect forever. Acking the per-recipient key must stop redelivery.
+func TestRouter_BroadcastUnackedReconnectDrainsWithDeliveryKeyThenAckStops(t *testing.T) {
+	url, _ := newTestServer(t, "tok")
+
+	// recipient is ONLINE at broadcast time (no-backfill: a broadcast only
+	// fans out to currently-registered peers).
+	r1, r1ctx := registerOK(t, url, "recipient", "tok")
+	sender, sctx := registerOK(t, url, "sender", "tok")
+	sendJSON(t, sctx, sender, mkEnv(t, "bcoff", "sender", "*", wire.KindBroadcast))
+
+	// Live delivery carries the per-recipient DeliveryKey already.
+	d1 := readDeliver(t, r1ctx, r1)
+	if d1.DeliveryKey != "bcoff|recipient" {
+		t.Fatalf("live broadcast DeliveryKey = %q, want bcoff|recipient", d1.DeliveryKey)
+	}
+	// Drop WITHOUT acking.
+	_ = r1.Close(websocket.StatusNormalClosure, "")
+	time.Sleep(100 * time.Millisecond)
+
+	// Reconnect: flushPending must redeliver the unacked broadcast copy WITH
+	// the per-recipient DeliveryKey (the bug: it was omitted here), envelope
+	// still the verbatim signed original.
+	r2, r2ctx := registerOK(t, url, "recipient", "tok")
+	del := readDeliver(t, r2ctx, r2)
+	if del.Envelope.ID != "bcoff" || del.Envelope.To != "*" {
+		t.Fatalf("drained broadcast envelope = id %q to %q, want verbatim bcoff/*",
+			del.Envelope.ID, del.Envelope.To)
+	}
+	if del.DeliveryKey != "bcoff|recipient" {
+		t.Fatalf("reconnect-drained broadcast DeliveryKey = %q, want bcoff|recipient (the R1 bug)", del.DeliveryKey)
+	}
+
+	// Ack the per-recipient row key (what the fixed client does).
+	sendJSON(t, r2ctx, r2, wire.Ack{
+		ProtocolVersion: wire.ProtocolVersion,
+		Type:            wire.ControlAck,
+		ID:              del.DeliveryKey,
+	})
+	time.Sleep(100 * time.Millisecond)
+	_ = r2.Close(websocket.StatusNormalClosure, "")
+	time.Sleep(100 * time.Millisecond)
+
+	// Reconnect again: the acked broadcast row must NOT redeliver (a short
+	// read times out, NOT a close). Pre-fix this redelivered forever.
+	r3, r3ctx := registerOK(t, url, "recipient", "tok")
+	rctx, cancel := context.WithTimeout(r3ctx, 500*time.Millisecond)
+	defer cancel()
+	if _, _, err := r3.Read(rctx); websocket.CloseStatus(err) != -1 {
+		t.Fatalf("acked broadcast copy was redelivered (infinite-redelivery bug) or conn closed: %v", err)
+	}
+}
+
 // TestRouter_AuditChainPerEventAndConcurrent asserts: each send/deliver/ack
 // appends exactly-one chain-valid audit row, and concurrent sends do not
 // break the chain (audit.Verify passes). The event counts are derived from

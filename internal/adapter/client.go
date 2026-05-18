@@ -52,6 +52,14 @@ var (
 	// delivered envelope fails HMAC verification — a compromised broker
 	// cannot forge a peer, so a bad signature is rejected, never surfaced.
 	ErrInboundHMAC = errors.New("adapter: inbound envelope failed HMAC verify")
+	// ErrMissingDeliveryKey is returned when the broker sends a deliver frame
+	// with an empty delivery_key. Every broker delivery path (direct,
+	// broadcast, reconnect drain) MUST set it to the durable per-recipient
+	// row key the recipient acks by; an empty key is a protocol violation,
+	// not something the adapter silently papers over (a fallback to
+	// Envelope.ID would ack the original signed id and never clear a
+	// broadcast row, redelivering it forever).
+	ErrMissingDeliveryKey = errors.New("adapter: broker deliver frame missing delivery_key")
 )
 
 // Client is a single broker WebSocket connection for one peer. It performs
@@ -314,11 +322,15 @@ func (c *Client) Recv(ctx context.Context) (wire.Deliver, error) {
 		if err := json.Unmarshal(data, &del); err != nil {
 			return wire.Deliver{}, fmt.Errorf("adapter: deliver decode: %w", err)
 		}
-		// A direct delivery may omit delivery_key (older shape / direct
-		// path): fall back to the envelope id, which equals the row key
-		// for direct messages.
+		// Every broker delivery path sets delivery_key to the durable
+		// per-recipient row key (== Envelope.ID for direct, "<id>|<peer>"
+		// for a broadcast copy). An empty key is a broker protocol
+		// violation: the old "fall back to Envelope.ID" masked a real bug
+		// where reconnect-drained broadcast copies were acked under the
+		// original signed id (a no-op on the composite row key) and thus
+		// redelivered forever. Reject loudly instead of papering over it.
 		if del.DeliveryKey == "" {
-			del.DeliveryKey = del.Envelope.ID
+			return del, fmt.Errorf("%w (id=%q)", ErrMissingDeliveryKey, del.Envelope.ID)
 		}
 		if err := hmac.VerifyEnvelope(c.cfg.HMACSecret, del.Envelope); err != nil {
 			// Reject — a compromised broker cannot forge a peer. Surface

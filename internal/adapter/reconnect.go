@@ -171,8 +171,10 @@ func (rc *ResumingClient) Run(ctx context.Context, h HandlerFunc) error {
 		for {
 			del, rerr := c.Recv(ctx)
 			if rerr != nil {
-				if errors.Is(rerr, ErrInboundHMAC) {
-					// Forged/corrupt inbound: drop it, keep pumping the
+				if errors.Is(rerr, ErrInboundHMAC) ||
+					errors.Is(rerr, ErrMissingDeliveryKey) {
+					// Forged/corrupt inbound, or a broker protocol
+					// violation (empty delivery_key): drop it, keep pumping the
 					// same connection (do NOT reconnect — the transport
 					// is fine, only this one frame is bad).
 					continue
