@@ -34,6 +34,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/nnemirovsky/peerbus/internal/audit"
 	"github.com/nnemirovsky/peerbus/internal/store"
 	"github.com/nnemirovsky/peerbus/internal/wire"
 )
@@ -45,15 +46,32 @@ type Server struct {
 	registry *Registry
 	store    *store.Store
 	log      *slog.Logger
+
+	// audit is the SINGLE broker-owned audit-log writer. The blake3 hash
+	// chain (internal/audit) is only well defined under a single serialised
+	// writer; audit.Appender guards every Append with its own mutex, so all
+	// connection goroutines funnel send/deliver/ack events through this one
+	// instance (see router.go's auditEvent). Never construct a second
+	// Appender or write audit rows by any other path. May be nil: audit is
+	// then disabled and routing still works (auditEvent is a no-op).
+	audit *audit.Appender
 }
 
 // NewServer constructs a broker Server over the given authenticator, registry
-// and durable store. log may be nil (a discarding logger is used).
+// and durable store. log may be nil (a discarding logger is used). Audit is
+// derived from the same store via a single broker-owned Appender (the
+// single-writer invariant the hash chain requires).
 func NewServer(auth *Authenticator, reg *Registry, st *store.Store, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(discardWriter{}, nil))
 	}
-	return &Server{auth: auth, registry: reg, store: st, log: log}
+	return &Server{
+		auth:     auth,
+		registry: reg,
+		store:    st,
+		log:      log,
+		audit:    audit.NewAppender(st),
+	}
 }
 
 // discardWriter is an io.Writer sink for the default no-op logger.
@@ -278,13 +296,18 @@ func (s *Server) flushPending(ctx context.Context, pc *peerConn) {
 		if err := s.store.MarkDelivered(m.ID); err != nil {
 			s.log.Warn("mark delivered failed", "id", m.ID, "err", err)
 		}
+		// Audit the flushed (re)delivery through the single broker-owned
+		// Appender, same as a live deliverTo, so the chain reflects every
+		// delivery including offline-drain and reconnect redelivery.
+		s.auditEvent("deliver", m.ID, m.From, pc.name)
 	}
 }
 
 // serve runs until the connection is closed (peer disconnect) or taken over.
-// Post-handshake frame routing is Task 8; for now the loop drains/ignores
-// inbound frames and exits promptly when the connection is torn down so the
-// goroutine never leaks.
+// Each post-handshake frame is dispatched by routeFrame (router.go): a typed
+// control object (ack/peers) or a data-channel Envelope (direct/broadcast).
+// The loop exits promptly when the connection is torn down so the goroutine
+// never leaks.
 func (s *Server) serve(ctx context.Context, pc *peerConn) {
 	for {
 		select {
@@ -295,12 +318,16 @@ func (s *Server) serve(ctx context.Context, pc *peerConn) {
 			return
 		default:
 		}
-		_, _, err := pc.ws.Read(ctx)
+		typ, data, err := pc.ws.Read(ctx)
 		if err != nil {
 			// Closed (takeover, client disconnect, or context cancel).
 			return
 		}
-		// Task 8 will route post-handshake control/envelope frames here.
+		if typ != websocket.MessageText {
+			// Only text JSON frames are routable; ignore anything else.
+			continue
+		}
+		s.routeFrame(ctx, pc, data)
 	}
 }
 
