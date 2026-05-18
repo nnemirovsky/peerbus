@@ -1,0 +1,74 @@
+# peerbus broker — managed, long-lived service (broker ONLY)
+#
+# WHY THIS COMPOSE FILE RUNS ONLY THE BROKER, NEVER AN ADAPTER:
+#
+# peerbus's topology is one long-lived broker + many thin, ephemeral adapter
+# processes. The broker holds the durable SQLite queue and the blake3
+# hash-chain audit log; it MUST outlive every agent session so offline
+# messages survive and unacked messages can be redelivered on reconnect.
+#
+# Adapters are deliberately ABSENT from this manifest. An adapter's lifecycle
+# is owned by the agent runtime that spawns it:
+#   - --adapter=cc      : spawned per Claude Code session over stdio by Claude
+#                         Code itself (one short-lived adapter per session).
+#   - --adapter=generic : spawned per drain-agent (e.g. Hermes) as its own
+#                         stdio MCP child process.
+# Putting an adapter here, or — worse — spawning the broker per session, is
+# exactly the cc2cc failure mode this design fixes: cc2cc conflated broker and
+# adapter into a per-session `server.mjs` that orphaned when the session ended
+# and burned CPU in the background indefinitely. The broker/adapter split
+# designs that bug out: the broker is a single managed service (this file),
+# and adapters die with the stdio session that owns them.
+#
+# Operate this as a normal managed service: `restart: always`, a named volume
+# for the SQLite DB so the durable queue and audit chain persist across
+# restarts, and all secrets injected out-of-band via the environment.
+#
+# Provision PEERBUS_TOKENS and PEERBUS_HMAC_SECRET out-of-band (a real secret
+# store / .env not committed to git). The HMAC secret must satisfy the
+# broker's minimum length or it refuses to start (see internal/broker/config.go
+# and internal/hmac.MinSecretLen). PEERBUS_TOKENS is a comma-separated list.
+#
+# Validate locally with: make deploy-validate
+#   (runs `docker compose -f deploy/compose.yml config -q`).
+
+services:
+  peerbus-broker:
+    image: peerbus-broker:latest
+    # Build from the repo root if you are not pulling a prebuilt image.
+    # The broker binary is `peerbus-broker serve`.
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["serve"]
+    restart: always
+    # The broker binds PEERBUS_LISTEN (host:port). Publish that port so
+    # adapters on other machines can dial in. Keep the container-side port in
+    # sync with PEERBUS_LISTEN below.
+    ports:
+      - "8080:8080"
+    environment:
+      # WS bind address inside the container. Bind 0.0.0.0 so the published
+      # port reaches it (the in-code default 127.0.0.1:8080 is loopback-only).
+      PEERBUS_LISTEN: "0.0.0.0:8080"
+      # Comma-separated static bearer tokens. Provide via .env / secret store,
+      # NOT inline. At least one token is required or the broker won't start.
+      PEERBUS_TOKENS: "${PEERBUS_TOKENS:?set PEERBUS_TOKENS out-of-band}"
+      # Shared end-to-end HMAC-SHA256 secret distributed to peers out-of-band.
+      # Must meet internal/hmac.MinSecretLen or the broker refuses to start.
+      PEERBUS_HMAC_SECRET: "${PEERBUS_HMAC_SECRET:?set PEERBUS_HMAC_SECRET out-of-band}"
+      # Durable SQLite store path INSIDE the container — must live on the
+      # named volume below so the queue + audit chain survive restarts.
+      PEERBUS_DB: "/data/peerbus.db"
+    volumes:
+      # Named volume for the durable SQLite DB (WAL files included). This is
+      # the at-least-once delivery + audit guarantee surviving restarts.
+      - peerbus-data:/data
+    # No healthcheck command: the distroless image ships no shell/nc, and the
+    # broker exposes no health subcommand. `restart: always` plus the broker's
+    # own crash-on-misconfig (missing token / short HMAC secret exits non-zero)
+    # is the supervision contract. Add an external WS probe if your platform
+    # needs liveness signals.
+
+volumes:
+  peerbus-data:

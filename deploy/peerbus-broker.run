@@ -1,0 +1,51 @@
+#!/bin/sh
+# s6 run-script example — peerbus broker as a managed, long-lived service.
+#
+# WHY THIS SUPERVISES ONLY THE BROKER, NEVER AN ADAPTER:
+#
+# The broker holds the durable SQLite queue and the blake3 hash-chain audit
+# log; it MUST outlive every agent session so offline messages survive and
+# unacked messages can be redelivered on reconnect. It is a single managed
+# service supervised here by s6 (restart on exit is s6's default contract).
+#
+# Adapters are deliberately NOT supervised here. An adapter's lifecycle is
+# owned by the agent runtime that spawns it over stdio:
+#   - --adapter=cc      : one short-lived adapter per Claude Code session,
+#                         spawned by Claude Code itself.
+#   - --adapter=generic : spawned per drain-agent (e.g. Hermes) as its own
+#                         stdio MCP child.
+# Supervising an adapter here, or spawning the broker per session, is exactly
+# the cc2cc failure mode this design fixes: cc2cc conflated broker and adapter
+# into a per-session `server.mjs` that orphaned when the session ended and
+# burned CPU forever. The broker/adapter split designs that bug out — the
+# broker is the one supervised service (this script); adapters die with the
+# stdio session that owns them.
+#
+# Install: place this file at /etc/s6/peerbus-broker/run (chmod +x), with the
+# secrets sourced from an out-of-band env file (NOT committed). PEERBUS_TOKENS
+# is comma-separated; PEERBUS_HMAC_SECRET must meet the broker's minimum
+# length or the broker exits non-zero and s6 keeps restarting it (intended:
+# misconfiguration is loud, not silent).
+
+set -e
+
+# Source secrets out-of-band. Provision this file via your secret store.
+# It must export PEERBUS_TOKENS and PEERBUS_HMAC_SECRET.
+if [ -r /etc/peerbus/broker.env ]; then
+    # shellcheck disable=SC1091
+    . /etc/peerbus/broker.env
+fi
+
+# Bind a routable address so adapters on other machines can dial in. The
+# in-code default (127.0.0.1:8080) is loopback-only.
+export PEERBUS_LISTEN="${PEERBUS_LISTEN:-0.0.0.0:8080}"
+
+# Durable SQLite store on persistent disk (survives restarts: the
+# at-least-once + audit guarantee). Match the path to your volume mount.
+export PEERBUS_DB="${PEERBUS_DB:-/var/lib/peerbus/peerbus.db}"
+
+# PEERBUS_TOKENS and PEERBUS_HMAC_SECRET come from the env file above; the
+# broker refuses to start (non-zero exit) if a token is missing or the HMAC
+# secret is too short — s6 will keep restarting until it is fixed.
+
+exec peerbus-broker serve
