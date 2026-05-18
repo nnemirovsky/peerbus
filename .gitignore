@@ -1,0 +1,30 @@
+# Binaries
+/dist/
+/peerbus-broker
+/peerbus-adapter
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+go.work
+go.work.sum
+
+# Databases (durable SQLite store + WAL/SHM sidecars)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Coverage
+coverage.out
+coverage.txt
+*.coverprofile
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

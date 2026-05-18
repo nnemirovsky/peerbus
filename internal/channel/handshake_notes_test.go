@@ -61,11 +61,11 @@ const malformedPushNotification = `{
 
 func TestHandshakeProvisionalSchema(t *testing.T) {
 	tests := []struct {
-		name      string
-		in        string
-		decode    func([]byte) (any, error)
-		wantErr   bool
-		check     func(t *testing.T, v any)
+		name    string
+		in      string
+		decode  func([]byte) (any, error)
+		wantErr bool
+		check   func(t *testing.T, v any)
 	}{
 		{
 			name: "initialize params round-trips and carries channel capability",
