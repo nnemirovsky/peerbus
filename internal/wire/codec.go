@@ -11,6 +11,12 @@ import (
 // negotiation is additive, but v1 implements no negotiation engine.
 const ProtocolVersion = "v1"
 
+// MaxFrameBytes is the per-WebSocket-frame read budget applied by both the
+// broker (server side) and the adapter client. Envelopes carry opaque
+// application JSON, so the budget is generous (1 MiB) but bounded so a
+// hostile peer cannot exhaust memory with an unbounded frame.
+const MaxFrameBytes = 1 << 20
+
 // ErrUnsupportedVersion is returned by CheckVersion for any non-matching value.
 var ErrUnsupportedVersion = errors.New("wire: unsupported protocol version")
 

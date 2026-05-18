@@ -120,7 +120,7 @@ func (b *genericBus) Peers(ctx context.Context) ([]string, error) {
 		return names, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(5 * time.Second):
+	case <-time.After(peersReplyTimeout):
 		return nil, fmt.Errorf("adapter: peers reply timed out")
 	}
 }

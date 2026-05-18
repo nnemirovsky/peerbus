@@ -59,28 +59,28 @@ func tokenEq(a, b string) bool {
 }
 
 // Bind associates name with conn under token. On success it returns
-// takenOver=true and the superseded connection iff this was a same-token
-// takeover of an existing binding (the caller may inspect/close it; Bind has
-// already called CloseTakenOver on it). A different-token claim returns
-// ErrNameClaimed and does not disturb the existing binding.
-func (r *Registry) Bind(name, token string, conn Conn) (takenOver bool, old Conn, err error) {
+// takenOver=true iff this was a same-token takeover of an existing binding
+// (Bind has already called CloseTakenOver on the superseded connection). A
+// different-token claim returns ErrNameClaimed and does not disturb the
+// existing binding.
+func (r *Registry) Bind(name, token string, conn Conn) (takenOver bool, err error) {
 	r.mu.Lock()
 	existing, ok := r.peers[name]
 	if ok {
 		if !tokenEq(existing.token, token) {
 			r.mu.Unlock()
-			return false, nil, ErrNameClaimed
+			return false, ErrNameClaimed
 		}
 		// Same-token takeover: install the new conn, then close the old
 		// one outside the lock.
 		r.peers[name] = binding{conn: conn, token: token}
 		r.mu.Unlock()
 		existing.conn.CloseTakenOver()
-		return true, existing.conn, nil
+		return true, nil
 	}
 	r.peers[name] = binding{conn: conn, token: token}
 	r.mu.Unlock()
-	return false, nil, nil
+	return false, nil
 }
 
 // Remove unbinds name iff it is currently bound to conn. The conn-identity

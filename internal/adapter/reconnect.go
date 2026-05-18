@@ -36,6 +36,12 @@ import (
 const (
 	baseBackoff = 100 * time.Millisecond
 	maxBackoff  = 5 * time.Second
+
+	// peersReplyTimeout bounds the wait for a broker peers reply. Without
+	// it a peers reply lost across a reconnect would block until ctx
+	// cancel (forever for a long-lived session). Shared by genericBus.Peers
+	// and the cc bus.
+	peersReplyTimeout = 5 * time.Second
 )
 
 // HandlerFunc consumes one already-deduped, HMAC-verified inbound
@@ -117,13 +123,12 @@ func (rc *ResumingClient) connect(ctx context.Context) (*Client, error) {
 	}
 }
 
-// surface runs one envelope through dedupe then (if new) the handler, and
+// surface runs one delivery through dedupe then (if new) the handler, and
 // acks after the host consumes. A duplicate (already seen) is acked
 // straight away without re-invoking the handler — the host already saw it;
 // acking clears it from the broker's unacked set so it stops being
 // redelivered. A handler error leaves the message unacked (redelivered +
 // re-deduped next reconnect).
-// surface runs one delivery through dedupe then (if new) the handler.
 //
 // Dedupe keys off the SIGNED envelope id (del.Envelope.ID): that is the
 // stable per-message identity the host must see exactly once. For a

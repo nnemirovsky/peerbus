@@ -22,10 +22,10 @@ func TestRegistry_AddRemoveList(t *testing.T) {
 	}
 
 	a, b := &fakeConn{}, &fakeConn{}
-	if _, _, err := r.Bind("alice", "tok", a); err != nil {
+	if _, err := r.Bind("alice", "tok", a); err != nil {
 		t.Fatalf("bind alice: %v", err)
 	}
-	if _, _, err := r.Bind("bob", "tok", b); err != nil {
+	if _, err := r.Bind("bob", "tok", b); err != nil {
 		t.Fatalf("bind bob: %v", err)
 	}
 
@@ -48,20 +48,17 @@ func TestRegistry_AddRemoveList(t *testing.T) {
 func TestRegistry_SameTokenTakeover(t *testing.T) {
 	r := NewRegistry()
 	old := &fakeConn{}
-	if _, _, err := r.Bind("alice", "tok", old); err != nil {
+	if _, err := r.Bind("alice", "tok", old); err != nil {
 		t.Fatalf("first bind: %v", err)
 	}
 
 	newc := &fakeConn{}
-	takenOver, oldRet, err := r.Bind("alice", "tok", newc)
+	takenOver, err := r.Bind("alice", "tok", newc)
 	if err != nil {
 		t.Fatalf("same-token re-bind: %v", err)
 	}
 	if !takenOver {
 		t.Fatalf("takenOver = false, want true for same-token re-claim")
-	}
-	if oldRet != old {
-		t.Fatalf("returned old conn = %v, want %v", oldRet, old)
 	}
 	if !old.closed.Load() {
 		t.Fatalf("old connection was not closed on takeover")
@@ -74,12 +71,12 @@ func TestRegistry_SameTokenTakeover(t *testing.T) {
 func TestRegistry_DifferentTokenReject(t *testing.T) {
 	r := NewRegistry()
 	old := &fakeConn{}
-	if _, _, err := r.Bind("alice", "tok-A", old); err != nil {
+	if _, err := r.Bind("alice", "tok-A", old); err != nil {
 		t.Fatalf("first bind: %v", err)
 	}
 
 	newc := &fakeConn{}
-	_, _, err := r.Bind("alice", "tok-B", newc)
+	_, err := r.Bind("alice", "tok-B", newc)
 	if err != ErrNameClaimed {
 		t.Fatalf("different-token re-bind err = %v, want ErrNameClaimed", err)
 	}
@@ -95,8 +92,8 @@ func TestRegistry_RemoveStaleConnIsNoop(t *testing.T) {
 	r := NewRegistry()
 	old := &fakeConn{}
 	newc := &fakeConn{}
-	_, _, _ = r.Bind("alice", "tok", old)
-	_, _, _ = r.Bind("alice", "tok", newc) // takeover
+	_, _ = r.Bind("alice", "tok", old)
+	_, _ = r.Bind("alice", "tok", newc) // takeover
 
 	// The displaced old conn later notices it was closed and calls Remove;
 	// it must NOT evict the live new binding.
@@ -113,7 +110,7 @@ func TestRegistry_ConcurrentBind(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _, _ = r.Bind("alice", "tok", &fakeConn{})
+			_, _ = r.Bind("alice", "tok", &fakeConn{})
 		}()
 	}
 	wg.Wait()

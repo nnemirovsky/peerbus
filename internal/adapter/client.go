@@ -134,7 +134,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("adapter: dial: %w", err)
 	}
-	ws.SetReadLimit(1 << 20)
+	ws.SetReadLimit(wire.MaxFrameBytes)
 
 	reg := wire.Register{
 		ProtocolVersion: wire.ProtocolVersion,
@@ -245,7 +245,13 @@ func (c *Client) Broadcast(ctx context.Context, id, ts, source string, body json
 // Peers requests the broker's current registry and returns the peer names.
 // It writes a peers control frame then reads frames until the peers reply
 // arrives. Any deliver frames seen while waiting are returned so the caller
-// (the reconnect loop) does not drop them.
+// does not drop them.
+//
+// This reads the WS itself, so it MUST NOT be used while a Recv/resume loop
+// is concurrently pumping the same connection (two readers split frames and
+// deadlock). For that case use RequestPeers + SetPeersSink instead (see how
+// genericBus.Peers does it). Safe only on a bare connection with no other
+// reader — e.g. in tests.
 func (c *Client) Peers(ctx context.Context) (names []string, strays []wire.Deliver, err error) {
 	ws := c.conn()
 	if ws == nil {

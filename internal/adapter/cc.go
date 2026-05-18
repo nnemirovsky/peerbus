@@ -84,10 +84,10 @@ func (b *ccBus) Peers(ctx context.Context) ([]string, error) {
 		return names, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(5 * time.Second):
+	case <-time.After(peersReplyTimeout):
 		// MAJOR-6: bound the wait. Without this a peers reply lost across
 		// a reconnect would block until ctx cancel (forever for a
-		// long-lived cc session). Matches genericBus.Peers.
+		// long-lived cc session).
 		return nil, fmt.Errorf("adapter: peers reply timed out")
 	}
 }

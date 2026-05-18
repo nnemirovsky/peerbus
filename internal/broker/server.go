@@ -160,8 +160,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("ws accept failed", "err", err)
 		return
 	}
-	// Generous frame budget — envelopes carry opaque application JSON.
-	ws.SetReadLimit(1 << 20)
+	ws.SetReadLimit(wire.MaxFrameBytes)
 
 	ctx := r.Context()
 	pc := newPeerConn(ws)
@@ -240,7 +239,7 @@ func (s *Server) handshake(ctx context.Context, pc *peerConn) (string, bool) {
 
 	// Bind in the registry: same-token => takeover (old conn closed by the
 	// registry), different-token => reject.
-	takenOver, _, err := s.registry.Bind(reg.Name, reg.Token, pc)
+	takenOver, err := s.registry.Bind(reg.Name, reg.Token, pc)
 	if err != nil {
 		if errors.Is(err, ErrNameClaimed) {
 			pc.closeNormal(websocket.StatusPolicyViolation, "name claimed under a different token")
