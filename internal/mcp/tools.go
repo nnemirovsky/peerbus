@@ -57,9 +57,11 @@ func argErrorf(format string, a ...any) error {
 	return &toolArgError{msg: fmt.Sprintf(format, a...)}
 }
 
-// toolsListResult is the static tools/list payload. Schemas are minimal but
-// accurate so a host can validate calls before sending them.
-func toolsListResult() map[string]any {
+// toolsListResult is the tools/list payload. Schemas are minimal but
+// accurate so a host can validate calls before sending them. When hideDrain
+// is set (the cc adapter, which is push-driven via claude/channel
+// notifications) bus.drain is omitted — cc must not advertise a no-op drain.
+func toolsListResult(hideDrain bool) map[string]any {
 	strProp := func(desc string) map[string]any {
 		return map[string]any{"type": "string", "description": desc}
 	}
@@ -68,49 +70,50 @@ func toolsListResult() map[string]any {
 		// over-constrain it (the bus hashes it verbatim).
 		return map[string]any{"type": "object", "description": desc}
 	}
-	return map[string]any{
-		"tools": []map[string]any{
-			{
-				"name":        "bus.send",
-				"description": "Send a direct message to one peer on the bus.",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"to":   strProp("recipient peer name"),
-						"body": objProp("opaque application JSON payload"),
-					},
-					"required": []string{"to", "body"},
+	tools := []map[string]any{
+		{
+			"name":        "bus.send",
+			"description": "Send a direct message to one peer on the bus.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"to":   strProp("recipient peer name"),
+					"body": objProp("opaque application JSON payload"),
 				},
+				"required": []string{"to", "body"},
 			},
-			{
-				"name":        "bus.broadcast",
-				"description": "Broadcast a message to every currently-registered peer except yourself.",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"body": objProp("opaque application JSON payload"),
-					},
-					"required": []string{"body"},
+		},
+		{
+			"name":        "bus.broadcast",
+			"description": "Broadcast a message to every currently-registered peer except yourself.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"body": objProp("opaque application JSON payload"),
 				},
+				"required": []string{"body"},
 			},
-			{
-				"name":        "bus.peers",
-				"description": "List the peers currently registered on the bus.",
-				"inputSchema": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
-				},
-			},
-			{
-				"name":        "bus.drain",
-				"description": "Return and acknowledge all messages received since the last drain.",
-				"inputSchema": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
-				},
+		},
+		{
+			"name":        "bus.peers",
+			"description": "List the peers currently registered on the bus.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
 			},
 		},
 	}
+	if !hideDrain {
+		tools = append(tools, map[string]any{
+			"name":        "bus.drain",
+			"description": "Return and acknowledge all messages received since the last drain.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		})
+	}
+	return map[string]any{"tools": tools}
 }
 
 // toolResult wraps a JSON value as an MCP tool result. MCP tool results are

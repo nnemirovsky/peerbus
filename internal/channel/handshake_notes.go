@@ -1,61 +1,58 @@
-// Package channel will implement the Claude Code "channels" MCP capability
+// Package channel implements the Claude Code "channels" MCP capability
 // (`claude/channel`) for the peerbus cc adapter.
 //
-// PROVISIONAL — BLOCKED SPIKE.
+// DOCUMENTED SCHEMA.
 //
-// Every type in this file is a PROVISIONAL reconstruction of the
-// `claude/channel` handshake and push-wake schema. The authoritative schema
-// could NOT be captured: the Task 1 spike ran inside a non-interactive agent
-// that cannot launch an interactive
-// `claude --dangerously-load-development-channels` session. See
-// docs/spikes/claude-channel-handshake.md for (a) the intended capture
-// procedure, (b) why automated capture is impossible here, and (c) the
-// provisional schema these structs mirror.
+// Every type in this file mirrors the authoritative `claude/channel` wire
+// schema sourced from official Claude Code documentation
+// (`channels-reference.md`, Claude Code v2.1.80+), recorded verbatim at the
+// repo root in CHANNELS_SCHEMA.md and summarized in
+// docs/spikes/claude-channel-handshake.md. No live capture was required; the
+// earlier PROVISIONAL/BLOCKED status is rescinded.
 //
-// These structs carry NO logic. They exist only so the provisional schema is
-// expressed in Go and round-trip tested. They MUST be reconciled against a
-// real captured session before any --adapter=cc work begins. Per the plan's
-// Task 1 blocker clause, the project proceeds under the generic-only reduced
-// plan variant; this file is a placeholder for the deferred cc path.
+// These structs document the schema in Go and are round-trip tested. The
+// live cc adapter (channel.go) builds the same frames directly; this file is
+// the schema-of-record the tests pin to.
 package channel
 
 import "encoding/json"
 
-// ProvisionalProtocolVersion is the MCP protocol version string guessed for
-// the handshake. PROVISIONAL — unverified.
-const ProvisionalProtocolVersion = "2025-06-18"
+// MCPProtocolVersion is the MCP protocol version string the cc adapter
+// advertises (echoed from the client when present; this is the fallback).
+const MCPProtocolVersion = "2025-06-18"
 
-// ProvisionalChannelCapabilityKey is the experimental capability key the
-// server is assumed to advertise. PROVISIONAL — the plan specifies
-// `experimental: { "claude/channel": {} }`; the exact nesting is unverified.
-const ProvisionalChannelCapabilityKey = "claude/channel"
+// ChannelCapabilityKey is the experimental capability key the server
+// advertises: capabilities.experimental["claude/channel"] = {} (DOCUMENTED,
+// CHANNELS_SCHEMA.md §1). Its presence registers Claude Code's notification
+// listener for the push method below.
+const ChannelCapabilityKey = "claude/channel"
 
-// ProvisionalPushMethod is the guessed JSON-RPC notification method used to
-// push-wake an idle session. PROVISIONAL — unverified.
-const ProvisionalPushMethod = "notifications/claude/channel"
+// PushMethod is the JSON-RPC notification method the server emits to
+// push-wake an idle session (DOCUMENTED, CHANNELS_SCHEMA.md §3).
+const PushMethod = "notifications/claude/channel"
 
-// ClientInfo is the MCP client identity block. PROVISIONAL.
+// ClientInfo is the MCP client identity block.
 type ClientInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 }
 
-// ServerInfo is the MCP server identity block. PROVISIONAL.
+// ServerInfo is the MCP server identity block.
 type ServerInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 }
 
-// Capabilities is the MCP capabilities object. The channel capability is
-// assumed to live under `experimental["claude/channel"]` as an (possibly
-// empty) object. PROVISIONAL — nesting and key are unverified.
+// Capabilities is the MCP capabilities object. The channel capability lives
+// under experimental["claude/channel"] as an empty object; tools is the
+// standard MCP capability, present because the cc adapter exposes the bus.*
+// reply tools (two-way channel). DOCUMENTED — CHANNELS_SCHEMA.md §1.
 type Capabilities struct {
 	Experimental map[string]json.RawMessage `json:"experimental,omitempty"`
 	Tools        json.RawMessage            `json:"tools,omitempty"`
 }
 
 // InitializeParams is the `initialize` request params (client -> server).
-// PROVISIONAL.
 type InitializeParams struct {
 	ProtocolVersion string       `json:"protocolVersion"`
 	Capabilities    Capabilities `json:"capabilities"`
@@ -63,42 +60,34 @@ type InitializeParams struct {
 }
 
 // InitializeResult is the `initialize` result (server -> client). The server
-// echoes the channel capability so Claude treats it as push-capable.
-// PROVISIONAL.
+// advertises experimental["claude/channel"]={} (so Claude treats it as a
+// push-capable channel) and tools={} (so Claude discovers the bus.* reply
+// tools). DOCUMENTED — CHANNELS_SCHEMA.md §1.
 type InitializeResult struct {
 	ProtocolVersion string       `json:"protocolVersion"`
 	Capabilities    Capabilities `json:"capabilities"`
 	ServerInfo      ServerInfo   `json:"serverInfo"`
 }
 
-// ContentBlock is one MCP-style content block in a push notification.
-// PROVISIONAL — content may instead be a flat string.
-type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-}
-
-// PushMetadata carries peerbus envelope hints surfaced to the session.
-// PROVISIONAL.
-type PushMetadata struct {
-	From   string `json:"from,omitempty"`
-	Source string `json:"source,omitempty"`
-}
-
-// ChannelPushParams is the `params` of a `notifications/claude/channel` push.
-// PROVISIONAL — field names, nesting, and the correlation id are guesses.
+// ChannelPushParams is the `params` of a `notifications/claude/channel`
+// push (DOCUMENTED — CHANNELS_SCHEMA.md §3):
+//
+//   - Content (required): the event body, delivered as the text content of
+//     the injected <channel> XML tag.
+//   - Meta (optional): each key/value becomes an XML attribute on the
+//     <channel> tag. ALL VALUES MUST BE STRINGS. Keys must be valid
+//     identifiers (letters, digits, underscores only); keys with hyphens or
+//     special characters are silently dropped by Claude Code.
 type ChannelPushParams struct {
-	ChannelID string         `json:"channelId"`
-	TurnID    string         `json:"turnId,omitempty"`
-	Content   []ContentBlock `json:"content"`
-	Metadata  PushMetadata   `json:"metadata,omitempty"`
+	Content string            `json:"content"`
+	Meta    map[string]string `json:"meta,omitempty"`
 }
 
 // ChannelPushNotification is a full JSON-RPC notification frame that
-// push-wakes an idle session. A notification has no `id`. PROVISIONAL.
+// push-wakes an idle session. A notification has no `id`.
 //
-// Method MUST equal ProvisionalPushMethod for the frame to be a valid push;
-// the round-trip test treats a missing/empty Method as the malformed case.
+// Method MUST equal PushMethod for the frame to be a valid push; the
+// round-trip test treats a missing/empty Method as the malformed case.
 type ChannelPushNotification struct {
 	JSONRPC string            `json:"jsonrpc"`
 	Method  string            `json:"method"`

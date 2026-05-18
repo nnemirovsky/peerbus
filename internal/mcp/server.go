@@ -76,6 +76,17 @@ type rpcResponse struct {
 	Error   *rpcError       `json:"error,omitempty"`
 }
 
+// rpcNotification is a server -> client JSON-RPC notification (no id, no
+// result). It shares the same single serialised writer as responses so a
+// push notification never interleaves with a tools/call reply on stdout.
+// Added (additively, no fork) for the cc adapter's claude/channel push path
+// — the generic adapter never emits notifications and is unaffected.
+type rpcNotification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
 // Server is the minimal stdio MCP server. It owns the JSON-RPC framing and
 // dispatch; all bus behaviour is delegated to the injected Bus (the generic
 // adapter wires a broker-backed Bus in internal/adapter/generic.go).
@@ -87,16 +98,76 @@ type Server struct {
 	in  *bufio.Reader
 
 	initialized bool
+
+	// serverName is the serverInfo.name advertised at initialize. Defaults
+	// to the generic adapter name; the cc adapter overrides it.
+	serverName string
+	// extraCaps holds additional capabilities merged into the initialize
+	// result's `capabilities` object (e.g. the cc adapter's
+	// experimental["claude/channel"]). nil for the generic adapter — its
+	// behaviour is byte-identical to before this field existed.
+	extraCaps map[string]any
+	// hideDrain omits bus.drain from tools/list. The cc adapter is
+	// push-driven (inbound arrives as claude/channel notifications, not via
+	// host-driven drain) so it must not advertise a no-op bus.drain. false
+	// for the generic adapter — unchanged behaviour.
+	hideDrain bool
+}
+
+// ServerOption configures a Server at construction. Options are purely
+// additive — with no options the Server behaves exactly as the generic
+// adapter always has (tools-only capability, generic serverInfo name).
+type ServerOption func(*Server)
+
+// WithServerName overrides the serverInfo.name advertised at initialize.
+func WithServerName(name string) ServerOption {
+	return func(s *Server) { s.serverName = name }
+}
+
+// WithCapabilities merges extra entries into the initialize result's
+// `capabilities` object (in addition to the always-present `tools`). The cc
+// adapter uses this to advertise experimental["claude/channel"]={}.
+func WithCapabilities(caps map[string]any) ServerOption {
+	return func(s *Server) { s.extraCaps = caps }
+}
+
+// WithoutDrain omits bus.drain from tools/list. The cc adapter (push-driven
+// via claude/channel notifications) uses this so it does not advertise a
+// no-op drain tool.
+func WithoutDrain() ServerOption {
+	return func(s *Server) { s.hideDrain = true }
 }
 
 // NewServer builds a Server reading framed JSON-RPC from in and writing
-// newline-delimited JSON-RPC to out, delegating tool calls to bus.
-func NewServer(bus Bus, in io.Reader, out io.Writer) *Server {
-	return &Server{
-		bus: bus,
-		in:  bufio.NewReader(in),
-		out: bufio.NewWriter(out),
+// newline-delimited JSON-RPC to out, delegating tool calls to bus. Options
+// are additive; with none it is the original generic-adapter server.
+func NewServer(bus Bus, in io.Reader, out io.Writer, opts ...ServerOption) *Server {
+	s := &Server{
+		bus:        bus,
+		in:         bufio.NewReader(in),
+		out:        bufio.NewWriter(out),
+		serverName: "peerbus-generic-adapter",
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+// Notify emits a server -> client JSON-RPC notification (no id). It shares
+// the Server's single serialised writer, so a push never interleaves with a
+// tools/call reply. This is the additive server->client path the cc
+// adapter's claude/channel push uses; the generic adapter never calls it.
+func (s *Server) Notify(method string, params any) {
+	b, err := json.Marshal(rpcNotification{JSONRPC: "2.0", Method: method, Params: params})
+	if err != nil {
+		return // a marshal failure on our own notification is unrecoverable; drop
+	}
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	_, _ = s.out.Write(b)
+	_ = s.out.WriteByte('\n')
+	_ = s.out.Flush()
 }
 
 // Serve runs the read/dispatch loop until ctx is cancelled, stdin reaches
@@ -207,7 +278,7 @@ func (s *Server) dispatch(ctx context.Context, raw []byte) {
 			s.writeResult(req.ID, struct{}{})
 		}
 	case "tools/list":
-		s.writeResult(req.ID, toolsListResult())
+		s.writeResult(req.ID, toolsListResult(s.hideDrain))
 	case "tools/call":
 		s.handleToolsCall(ctx, req)
 	default:
@@ -226,13 +297,17 @@ func (s *Server) handleInitialize(req rpcRequest) {
 	if pv == "" {
 		pv = protocolVersion
 	}
+	caps := map[string]any{
+		"tools": map[string]any{},
+	}
+	for k, v := range s.extraCaps {
+		caps[k] = v
+	}
 	s.writeResult(req.ID, map[string]any{
 		"protocolVersion": pv,
-		"capabilities": map[string]any{
-			"tools": map[string]any{},
-		},
+		"capabilities":    caps,
 		"serverInfo": map[string]any{
-			"name":    "peerbus-generic-adapter",
+			"name":    s.serverName,
 			"version": "1",
 		},
 	})

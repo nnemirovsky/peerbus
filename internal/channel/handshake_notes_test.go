@@ -5,10 +5,9 @@ import (
 	"testing"
 )
 
-// These tests assert the PROVISIONAL handshake structs round-trip the
-// representative provisional sample JSON from
-// docs/spikes/claude-channel-handshake.md. They guard the provisional schema
-// only; they prove nothing about the real (uncaptured) Claude behavior.
+// These tests assert the DOCUMENTED handshake structs round-trip the
+// representative sample JSON from CHANNELS_SCHEMA.md / the spike doc. They
+// pin the schema-of-record (the live channel.go builds the same frames).
 
 const sampleInitializeParams = `{
   "protocolVersion": "2025-06-18",
@@ -32,8 +31,8 @@ const sampleInitializeResult = `{
     "tools": {}
   },
   "serverInfo": {
-    "name": "peerbus-adapter",
-    "version": "0.0.0"
+    "name": "peerbus-cc-adapter",
+    "version": "1"
   }
 }`
 
@@ -41,14 +40,11 @@ const samplePushNotification = `{
   "jsonrpc": "2.0",
   "method": "notifications/claude/channel",
   "params": {
-    "channelId": "peerbus",
-    "turnId": "01J9Z000000000000000000000",
-    "content": [
-      { "type": "text", "text": "message body surfaced to the session" }
-    ],
-    "metadata": {
+    "content": "message body surfaced to the session",
+    "meta": {
       "from": "peer-name",
-      "source": "peer-bus"
+      "source": "peer-bus",
+      "msg_id": "01J9Z000000000000000000000"
     }
   }
 }`
@@ -56,10 +52,10 @@ const samplePushNotification = `{
 // malformed: a push frame missing the required "method" field.
 const malformedPushNotification = `{
   "jsonrpc": "2.0",
-  "params": { "channelId": "peerbus" }
+  "params": { "content": "x" }
 }`
 
-func TestHandshakeProvisionalSchema(t *testing.T) {
+func TestHandshakeDocumentedSchema(t *testing.T) {
 	tests := []struct {
 		name    string
 		in      string
@@ -77,11 +73,11 @@ func TestHandshakeProvisionalSchema(t *testing.T) {
 			},
 			check: func(t *testing.T, v any) {
 				p := v.(InitializeParams)
-				if p.ProtocolVersion != ProvisionalProtocolVersion {
-					t.Fatalf("protocolVersion = %q, want %q", p.ProtocolVersion, ProvisionalProtocolVersion)
+				if p.ProtocolVersion != MCPProtocolVersion {
+					t.Fatalf("protocolVersion = %q, want %q", p.ProtocolVersion, MCPProtocolVersion)
 				}
-				if _, ok := p.Capabilities.Experimental[ProvisionalChannelCapabilityKey]; !ok {
-					t.Fatalf("missing experimental[%q] capability", ProvisionalChannelCapabilityKey)
+				if _, ok := p.Capabilities.Experimental[ChannelCapabilityKey]; !ok {
+					t.Fatalf("missing experimental[%q] capability", ChannelCapabilityKey)
 				}
 				if p.ClientInfo.Name != "claude-code" {
 					t.Fatalf("clientInfo.name = %q, want claude-code", p.ClientInfo.Name)
@@ -89,7 +85,7 @@ func TestHandshakeProvisionalSchema(t *testing.T) {
 			},
 		},
 		{
-			name: "initialize result round-trips and echoes channel capability",
+			name: "initialize result round-trips and advertises channel + tools capability",
 			in:   sampleInitializeResult,
 			decode: func(b []byte) (any, error) {
 				var r InitializeResult
@@ -98,16 +94,19 @@ func TestHandshakeProvisionalSchema(t *testing.T) {
 			},
 			check: func(t *testing.T, v any) {
 				r := v.(InitializeResult)
-				if _, ok := r.Capabilities.Experimental[ProvisionalChannelCapabilityKey]; !ok {
-					t.Fatalf("result missing experimental[%q]", ProvisionalChannelCapabilityKey)
+				if _, ok := r.Capabilities.Experimental[ChannelCapabilityKey]; !ok {
+					t.Fatalf("result missing experimental[%q]", ChannelCapabilityKey)
 				}
-				if r.ServerInfo.Name != "peerbus-adapter" {
-					t.Fatalf("serverInfo.name = %q, want peerbus-adapter", r.ServerInfo.Name)
+				if len(r.Capabilities.Tools) == 0 {
+					t.Fatalf("result missing tools capability")
+				}
+				if r.ServerInfo.Name != "peerbus-cc-adapter" {
+					t.Fatalf("serverInfo.name = %q, want peerbus-cc-adapter", r.ServerInfo.Name)
 				}
 			},
 		},
 		{
-			name: "push notification round-trips with content and metadata",
+			name: "push notification round-trips with content and string meta",
 			in:   samplePushNotification,
 			decode: func(b []byte) (any, error) {
 				var n ChannelPushNotification
@@ -116,14 +115,17 @@ func TestHandshakeProvisionalSchema(t *testing.T) {
 			},
 			check: func(t *testing.T, v any) {
 				n := v.(ChannelPushNotification)
-				if n.Method != ProvisionalPushMethod {
-					t.Fatalf("method = %q, want %q", n.Method, ProvisionalPushMethod)
+				if n.Method != PushMethod {
+					t.Fatalf("method = %q, want %q", n.Method, PushMethod)
 				}
-				if len(n.Params.Content) != 1 || n.Params.Content[0].Type != "text" {
-					t.Fatalf("unexpected content blocks: %+v", n.Params.Content)
+				if n.Params.Content != "message body surfaced to the session" {
+					t.Fatalf("unexpected content: %q", n.Params.Content)
 				}
-				if n.Params.Metadata.Source != "peer-bus" {
-					t.Fatalf("metadata.source = %q, want peer-bus", n.Params.Metadata.Source)
+				if n.Params.Meta["source"] != "peer-bus" {
+					t.Fatalf("meta.source = %q, want peer-bus", n.Params.Meta["source"])
+				}
+				if n.Params.Meta["msg_id"] == "" {
+					t.Fatalf("meta.msg_id missing")
 				}
 			},
 		},
@@ -135,7 +137,7 @@ func TestHandshakeProvisionalSchema(t *testing.T) {
 				if err := json.Unmarshal(b, &n); err != nil {
 					return n, err
 				}
-				if n.Method != ProvisionalPushMethod {
+				if n.Method != PushMethod {
 					return n, errInvalidPush
 				}
 				return n, nil

@@ -1,167 +1,101 @@
-# Spike: Claude `claude/channel` handshake (PROVISIONAL — BLOCKED)
+# Spike: Claude `claude/channel` handshake (DOCUMENTED)
 
-> **Status: BLOCKED — provisional schema only.**
-> The live `claude/channel` MCP handshake could not be captured because this
-> spike was executed by a **non-interactive agent** that cannot launch an
-> interactive `claude --dangerously-load-development-channels` session. Per the
-> Task 1 blocker clause in `docs/plans/20260518-peerbus.md`, the project now
-> proceeds under the **generic-only reduced plan variant** (Tasks 2–10, 12
-> generic rows only, 13, 15; Task 11 and the cc rows of Task 12 SKIPPED; Task 14
-> uses the relaxed acceptance variant). Everything below the "Intended capture
-> procedure" section is **reconstructed from public documentation and known
-> MCP / `notifications/*` shapes — it is PROVISIONAL and MUST be re-verified
-> against a real interactive session before any `--adapter=cc` work begins.**
+> **Status: DOCUMENTED — from official Claude Code `channels-reference`.**
+> No live capture was required. The full, exact `claude/channel` wire schema
+> was obtained from official Claude Code documentation
+> (`channels-reference.md`, Claude Code v2.1.80+) and is recorded verbatim in
+> [`CHANNELS_SCHEMA.md`](../../CHANNELS_SCHEMA.md) at the repo root. That file
+> is the authoritative source; this doc summarizes it for the cc adapter and
+> records the (now-unnecessary) capture procedure for history.
+>
+> The earlier BLOCKED/PROVISIONAL status is rescinded. The generic-only
+> reduced plan variant in `docs/plans/20260518-peerbus.md` is RESCINDED;
+> Task 11 and the cc rows of Task 12 are back in scope (see the Task 1
+> `✅ RESOLVED` note in the plan).
 
-## (a) Intended capture procedure (for a future interactive operator)
+## (a) Authoritative schema (DOCUMENTED — see CHANNELS_SCHEMA.md)
 
-This is the procedure that *should* be run from a real, human-driven terminal
-to capture the authoritative schema. It is documented here so the spike can be
-completed later without re-deriving it.
+Sourced from `https://code.claude.com/docs/en/channels-reference.md` (Claude
+Code v2.1.80+). The full reference with field tables, delivery guarantees,
+and the permission-relay protocol lives in
+[`CHANNELS_SCHEMA.md`](../../CHANNELS_SCHEMA.md). Summary of what the cc
+adapter implements:
 
-1. Build a throwaway stdio "tee" MCP server that:
-   - speaks the standard MCP stdio framing (newline-delimited / `Content-Length`
-     framed JSON-RPC, whichever the client negotiates),
-   - in its `initialize` response advertises
-     `capabilities.experimental = { "claude/channel": {} }`,
-   - logs **every** raw JSON-RPC frame (both directions, verbatim, before any
-     parsing) to a file with a millisecond timestamp and a direction marker
-     (`>>` client→server, `<<` server→client).
-2. From a real interactive terminal run:
+### Capability declaration (initialize result, server → client)
 
-   ```
-   claude --dangerously-load-development-channels server:/abs/path/to/tee-server
-   ```
-
-3. Let the session reach idle. From a *second* peer/process, trigger whatever
-   path is expected to push-wake the session (in peerbus this will be a broker
-   `deliver`). Capture the resulting `notifications/claude/channel` frame.
-4. In the same session, exercise the reply path (the tool/notification Claude
-   uses to answer) and capture those frames too.
-5. Copy the verbatim frames into section (c) below, replacing the PROVISIONAL
-   blocks, and flip this document's status to `VERIFIED <date> <claude version>`.
-6. Re-enable Task 11 and the cc rows of Task 12; reconcile
-   `internal/channel/handshake_notes.go` against the captured truth.
-
-### What specifically must be captured
-
-- The full `initialize` request params (`protocolVersion`, client
-  `capabilities`, `clientInfo`).
-- The full `initialize` result, especially the exact key path and value used to
-  advertise the channel capability (`experimental` vs a dedicated namespace; the
-  exact key string `claude/channel`; whether the value object is empty `{}` or
-  carries options).
-- The `notifications/claude/channel` push: method name (exact), `params` shape,
-  how message **content** is carried, and how a **reply affordance** is surfaced
-  (a tool name to call back? a notification to emit? a correlation/turn id?).
-- Any per-turn correlation id that a reply must echo.
-- Error / unsupported-capability behavior if the client does not accept the
-  capability.
-
-## (b) Why automated capture is not possible here
-
-`claude --dangerously-load-development-channels` requires an **interactive
-Claude Code session** (a real REPL/turn loop with a human-attended terminal).
-This spike runs inside a **non-interactive subagent** with no ability to:
-
-- launch or attach to an interactive `claude` process,
-- drive its turn loop,
-- observe a live push-wake.
-
-Therefore the only honest output is a clearly-labeled provisional schema plus
-the exact procedure (above) for a human operator to finish the spike later.
-This matches the plan's explicit Task 1 blocker clause, which anticipates this
-outcome and prescribes the generic-only reduced plan — the bus is fully useful
-generic-only; cc push-wake is deferred, the plan is not dead-ended.
-
-## (c) PROVISIONAL reconstructed schema
-
-> **PROVISIONAL — NOT CAPTURED FROM A LIVE SESSION.** Reconstructed from public
-> Claude Code "channels" research-preview notes and the general shape of MCP
-> `initialize` + JSON-RPC `notifications/*`. Field names, nesting, and the reply
-> path are best-effort guesses and are very likely wrong in detail. Do not rely
-> on these for the cc adapter without completing the capture in (a).
-
-### Initialize request (client → server), provisional
+The MCP server declares the channel capability under
+`capabilities.experimental`:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 0,
-  "method": "initialize",
-  "params": {
-    "protocolVersion": "2025-06-18",
-    "capabilities": {
-      "experimental": {
-        "claude/channel": {}
-      }
-    },
-    "clientInfo": {
-      "name": "claude-code",
-      "version": "2.1.80"
-    }
+  "capabilities": {
+    "experimental": { "claude/channel": {} },
+    "tools": {}
   }
 }
 ```
 
-### Initialize result (server → client), provisional
+- Key `experimental["claude/channel"]` (exact string), value always `{}`.
+- `tools: {}` is the standard MCP capability; it must be present because the
+  cc adapter also exposes the `bus.*` reply tools (two-way channel).
+- The presence of `experimental["claude/channel"]` is what registers the
+  notification listener so Claude Code accepts `notifications/claude/channel`.
+- peerbus deliberately does **not** declare
+  `experimental["claude/channel/permission"]`: the optional permission relay
+  is intentionally out of scope — escalation policy lives in the consuming
+  agent's prompt, never in the bus.
 
-The server advertises the channel capability so Claude treats it as a
-push-capable channel:
+### Push / wake notification (server → client)
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 0,
-  "result": {
-    "protocolVersion": "2025-06-18",
-    "capabilities": {
-      "experimental": {
-        "claude/channel": {}
-      },
-      "tools": {}
-    },
-    "serverInfo": {
-      "name": "peerbus-adapter",
-      "version": "0.0.0"
-    }
-  }
-}
-```
-
-### Push-wake notification (server → client), provisional
-
-The server pushes this to wake an idle session and create a turn. Provisional
-guess: a JSON-RPC notification (no `id`) named `notifications/claude/channel`
-with a free-form `params` object carrying the message payload and a
-correlation id for the reply.
+A JSON-RPC **notification** (no `id`):
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "notifications/claude/channel",
   "params": {
-    "channelId": "peerbus",
-    "turnId": "01J9Z...ULID",
-    "content": [
-      { "type": "text", "text": "message body surfaced to the session" }
-    ],
-    "metadata": {
-      "from": "peer-name",
-      "source": "peer-bus"
-    }
+    "content": "<message body as text>",
+    "meta": { "from": "...", "source": "peer-bus", "msg_id": "..." }
   }
 }
 ```
 
-### Reply path, provisional
+- **Method**: `notifications/claude/channel` (exact string).
+- **`params.content`**: required string — the event body. Claude receives it
+  as the text content of an injected `<channel>` XML block.
+- **`params.meta`**: optional `Record<string, string>` — each key/value
+  becomes an XML attribute on the `<channel>` tag. **All values must be
+  strings.** Keys must be valid identifiers (letters, digits, underscores
+  only); keys with hyphens or special characters are silently dropped
+  (CHANNELS_SCHEMA.md §3). The cc adapter therefore uses identifier-safe
+  meta keys `from`, `source`, `msg_id`.
+- `source` is also set automatically by Claude Code from the MCP server's
+  configured name; peerbus additionally carries the envelope `source`
+  (`peer-bus`) in `meta.source` so the consuming agent's prompt can key its
+  escalation policy off it regardless of the server name.
 
-Provisional assumption: the session replies by **calling an MCP tool** the
-server exposes (e.g. `bus.send` / `bus.broadcast`) — i.e. the reply path is an
-ordinary `tools/call`, NOT a special channel notification — and the server
-correlates it back via `turnId` if needed. This is the lowest-risk assumption
-and aligns with peerbus's design (`bus.*` tools for outbound). **Unverified.**
+### Reply path (two-way channel)
 
-### Malformed sample (for the error-path test)
+Standard MCP — there is **no** special channel notification for replies.
+Claude calls ordinary MCP tools the server advertises via
+`ListToolsRequestSchema` / `CallToolRequestSchema`. peerbus exposes the same
+`bus.send` / `bus.broadcast` / `bus.peers` tool surface as the generic
+adapter. The tool call and its result are the complete reply protocol; no
+turn/correlation id is echoed.
+
+## (b) Capture procedure (retained for history — NOT needed)
+
+The schema is fully documented; no live capture is necessary. The original
+procedure (build a tee MCP server, launch `claude
+--dangerously-load-development-channels server:<tee>`, capture frames) is
+preserved here only as historical context — it has been superseded by the
+official documentation in `CHANNELS_SCHEMA.md`. The remaining manual step is
+the **end-to-end behavioural** verification (does an idle session actually
+wake and can Claude reach a second peer), which is the Post-Completion
+manual checklist at `docs/manual-e2e-claude-channel.md` — that is a
+behavioural smoke test, not a schema capture.
+
+## (c) Malformed sample (error-path test fixture)
 
 A push frame missing the required `method` field — must fail to parse as a
 valid push notification:
@@ -169,17 +103,12 @@ valid push notification:
 ```json
 {
   "jsonrpc": "2.0",
-  "params": { "channelId": "peerbus" }
+  "params": { "content": "x" }
 }
 ```
 
-## Open questions to resolve at capture time
+## References
 
-- Is the capability under `capabilities.experimental` or a top-level
-  `capabilities["claude/channel"]`? (Plan says `experimental: { "claude/channel": {} }`.)
-- Exact notification method string and whether content is `content[]` blocks
-  (MCP-style) or a flat string.
-- Is there a turn/correlation id the reply must echo, or is reply purely a
-  fire-and-forget tool call?
-- Behavior when the client declines the capability (hard error vs silent
-  no-push fallback).
+- [`CHANNELS_SCHEMA.md`](../../CHANNELS_SCHEMA.md) — authoritative wire schema
+- Official channels reference: https://code.claude.com/docs/en/channels-reference.md
+- Official channels overview: https://code.claude.com/docs/en/channels.md
