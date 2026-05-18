@@ -305,3 +305,92 @@ func TestMemoryDSN(t *testing.T) {
 		t.Fatalf("want 1 pending in :memory:, got %d", len(pend))
 	}
 }
+
+func TestAuditAppendAndRead(t *testing.T) {
+	s := newStore(t)
+
+	// Empty log: no rows, count 0, no last.
+	rows, err := s.AuditRows()
+	if err != nil {
+		t.Fatalf("AuditRows empty: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("want 0 audit rows, got %d", len(rows))
+	}
+	if n, err := s.AuditCount(); err != nil || n != 0 {
+		t.Fatalf("AuditCount empty = (%d, %v), want (0, nil)", n, err)
+	}
+	if _, ok, err := s.AuditLast(); err != nil || ok {
+		t.Fatalf("AuditLast empty = (ok=%v, %v), want (false, nil)", ok, err)
+	}
+
+	// Append two rows.
+	for i, r := range []AuditRow{
+		{Seq: 0, PrevHash: "g", Hash: "h0", Event: []byte("e0")},
+		{Seq: 1, PrevHash: "h0", Hash: "h1", Event: []byte("e1")},
+	} {
+		if err := s.AuditAppend(r); err != nil {
+			t.Fatalf("AuditAppend #%d: %v", i, err)
+		}
+	}
+
+	rows, err = s.AuditRows()
+	if err != nil {
+		t.Fatalf("AuditRows: %v", err)
+	}
+	if len(rows) != 2 || rows[0].Seq != 0 || rows[1].Seq != 1 {
+		t.Fatalf("AuditRows ordering wrong: %+v", rows)
+	}
+	if string(rows[1].Event) != "e1" || rows[1].Hash != "h1" {
+		t.Fatalf("AuditRows content wrong: %+v", rows[1])
+	}
+
+	last, ok, err := s.AuditLast()
+	if err != nil || !ok {
+		t.Fatalf("AuditLast = (ok=%v, %v)", ok, err)
+	}
+	if last.Seq != 1 || last.Hash != "h1" {
+		t.Fatalf("AuditLast wrong row: %+v", last)
+	}
+	if n, err := s.AuditCount(); err != nil || n != 2 {
+		t.Fatalf("AuditCount = (%d, %v), want (2, nil)", n, err)
+	}
+}
+
+func TestAuditAppendDuplicateSeqRejected(t *testing.T) {
+	s := newStore(t)
+	if err := s.AuditAppend(AuditRow{Seq: 0, PrevHash: "g", Hash: "h0", Event: []byte("e")}); err != nil {
+		t.Fatalf("AuditAppend: %v", err)
+	}
+	if err := s.AuditAppend(AuditRow{Seq: 0, PrevHash: "g", Hash: "h0b", Event: []byte("e")}); err == nil {
+		t.Fatalf("AuditAppend duplicate seq: want error, got nil")
+	}
+}
+
+func TestAuditTamper(t *testing.T) {
+	s := newStore(t)
+	if err := s.AuditAppend(AuditRow{Seq: 0, PrevHash: "g", Hash: "h0", Event: []byte("orig")}); err != nil {
+		t.Fatalf("AuditAppend: %v", err)
+	}
+	if err := s.AuditTamper(0, []byte("EVIL"), "badhash"); err != nil {
+		t.Fatalf("AuditTamper: %v", err)
+	}
+	rows, err := s.AuditRows()
+	if err != nil {
+		t.Fatalf("AuditRows: %v", err)
+	}
+	if string(rows[0].Event) != "EVIL" || rows[0].Hash != "badhash" {
+		t.Fatalf("AuditTamper did not mutate row: %+v", rows[0])
+	}
+}
+
+func TestAuditClosedStore(t *testing.T) {
+	s := newStore(t)
+	_ = s.Close()
+	if err := s.AuditAppend(AuditRow{Seq: 0, PrevHash: "g", Hash: "h"}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("AuditAppend after close: want ErrClosed, got %v", err)
+	}
+	if _, err := s.AuditRows(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("AuditRows after close: want ErrClosed, got %v", err)
+	}
+}

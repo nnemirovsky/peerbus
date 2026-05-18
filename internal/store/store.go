@@ -297,6 +297,121 @@ func (s *Store) MarkAcked(id string) error {
 	return nil
 }
 
+// AuditRow is one append-only audit-log row. The blake3 hash-chain semantics
+// live in internal/audit; the store only persists and reads back the rows.
+//
+//	Seq      : monotonic chain position (0 = genesis/first row).
+//	PrevHash : hex hash of the previous row (first row chains off blake3("")).
+//	Hash     : hex blake3(prev_hash || canonical event bytes).
+//	Event    : opaque canonical event blob, stored verbatim.
+//	TS       : unix nanos at append.
+type AuditRow struct {
+	Seq      int64
+	PrevHash string
+	Hash     string
+	Event    []byte
+	TS       int64
+}
+
+// AuditAppend durably appends one audit row. It does NOT compute or validate
+// the hash chain (that is internal/audit's job); it only persists the row as
+// given. The UNIQUE constraint on audit.seq is the last line of defence
+// against a duplicated chain position — internal/audit serialises appends so
+// this should never fire in practice, but a violation surfaces as an error
+// rather than a silent corruption.
+func (s *Store) AuditAppend(r AuditRow) error {
+	if err := s.okToUse(); err != nil {
+		return err
+	}
+	if r.Hash == "" || r.PrevHash == "" {
+		return fmt.Errorf("audit append: prev_hash and hash are required")
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO audit (seq, prev_hash, hash, event, ts)
+		VALUES (?, ?, ?, ?, ?)`,
+		r.Seq, r.PrevHash, r.Hash, r.Event, nowNanos())
+	if err != nil {
+		return fmt.Errorf("audit append: %w", err)
+	}
+	return nil
+}
+
+// AuditRows returns every audit row ordered by seq ascending (genesis first).
+// An empty slice (not an error) means the log is empty.
+func (s *Store) AuditRows() ([]AuditRow, error) {
+	if err := s.okToUse(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`
+		SELECT seq, prev_hash, hash, event, ts
+		FROM audit ORDER BY seq ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("audit rows query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []AuditRow
+	for rows.Next() {
+		var r AuditRow
+		if err := rows.Scan(&r.Seq, &r.PrevHash, &r.Hash, &r.Event, &r.TS); err != nil {
+			return nil, fmt.Errorf("audit rows scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("audit rows: %w", err)
+	}
+	return out, nil
+}
+
+// AuditCount returns the number of audit rows. Used by internal/audit to find
+// the next chain position without loading the whole log.
+func (s *Store) AuditCount() (int64, error) {
+	if err := s.okToUse(); err != nil {
+		return 0, err
+	}
+	var n int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM audit`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("audit count: %w", err)
+	}
+	return n, nil
+}
+
+// AuditLast returns the most recent audit row (highest seq) and ok=true, or
+// ok=false when the log is empty.
+func (s *Store) AuditLast() (AuditRow, bool, error) {
+	if err := s.okToUse(); err != nil {
+		return AuditRow{}, false, err
+	}
+	var r AuditRow
+	err := s.db.QueryRow(`
+		SELECT seq, prev_hash, hash, event, ts
+		FROM audit ORDER BY seq DESC LIMIT 1`).
+		Scan(&r.Seq, &r.PrevHash, &r.Hash, &r.Event, &r.TS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AuditRow{}, false, nil
+	}
+	if err != nil {
+		return AuditRow{}, false, fmt.Errorf("audit last: %w", err)
+	}
+	return r, true, nil
+}
+
+// AuditTamper overwrites the event and hash of the audit row at the given seq.
+// It exists ONLY to let tests simulate on-disk corruption of the chain; it is
+// never called by production code (the audit log is otherwise append-only).
+func (s *Store) AuditTamper(seq int64, event []byte, hash string) error {
+	if err := s.okToUse(); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE audit SET event = ?, hash = ? WHERE seq = ?`,
+		event, hash, seq)
+	if err != nil {
+		return fmt.Errorf("audit tamper: %w", err)
+	}
+	return nil
+}
+
 // RequeueUnacked makes every delivered-but-unacked message for recipient name
 // eligible for redelivery again (delivered -> 0). Acked messages are left
 // alone. Called when a peer reconnects so in-flight-but-unconfirmed messages
