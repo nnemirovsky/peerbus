@@ -1,9 +1,12 @@
 // Command peerbus-adapter is the thin, mostly-ephemeral adapter process.
 //
-// This is a Task 2 scaffold stub: it parses the --adapter=<mode> flag and
-// exits cleanly for known placeholder modes, or non-zero with a clear error
-// for an unknown/missing mode. The real broker WS client and MCP servers are
-// wired in Tasks 9-11.
+// Mode selection goes through the additive --adapter dispatch registry
+// (internal/adapter.Resolve): a mode is looked up by name, not by a
+// hard-coded switch, so future modes register without editing this file.
+// The real per-mode run loops (generic stdio MCP, cc claude/channel) land
+// in Tasks 10/11; this Task 9 skeleton resolves + acknowledges the mode
+// and exits cleanly. --version and the missing/unknown-mode non-zero
+// contract from Task 2 are preserved.
 package main
 
 import (
@@ -11,31 +14,28 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
+	"github.com/nnemirovsky/peerbus/internal/adapter"
 	"github.com/nnemirovsky/peerbus/internal/version"
 )
-
-// knownModes is the scaffold placeholder mode set. The real additive dispatch
-// table lands in Task 9 (internal/adapter/mode.go).
-var knownModes = map[string]bool{
-	"generic": true,
-	"cc":      true,
-}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// run parses adapter flags and returns a process exit code. Split out of main
-// so the flag-parse behaviour is testable.
+// run parses adapter flags and returns a process exit code. Split out of
+// main so the flag-parse behaviour is testable.
 func run(args []string, stdout, stderr io.Writer) int {
+	known := strings.Join(adapter.Modes(), ", ")
+
 	fs := flag.NewFlagSet("peerbus-adapter", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	mode := fs.String("adapter", "", "adapter mode (generic|cc)")
+	mode := fs.String("adapter", "", "adapter mode ("+strings.ReplaceAll(known, ", ", "|")+")")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "usage: peerbus-adapter --adapter=<mode>\n\n")
-		fmt.Fprintf(stderr, "scaffold stub (Task 2); adapter logic lands in Tasks 9-11\n\n")
+		fmt.Fprintf(stderr, "modes are resolved via the additive --adapter dispatch registry\n\n")
 		fmt.Fprintf(stderr, "flags:\n")
 		fs.PrintDefaults()
 	}
@@ -49,14 +49,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *mode == "" {
-		fmt.Fprintln(stderr, "peerbus-adapter: missing required --adapter=<mode> (one of: generic, cc)")
+		fmt.Fprintf(stderr, "peerbus-adapter: missing required --adapter=<mode> (one of: %s)\n", known)
 		return 2
 	}
-	if !knownModes[*mode] {
-		fmt.Fprintf(stderr, "peerbus-adapter: unknown adapter mode %q (one of: generic, cc)\n", *mode)
+	if _, err := adapter.Resolve(*mode); err != nil {
+		fmt.Fprintf(stderr, "peerbus-adapter: unknown adapter mode %q (one of: %s)\n", *mode, known)
 		return 2
 	}
 
-	fmt.Fprintf(stdout, "peerbus-adapter: mode %q accepted; adapter not implemented yet (scaffold stub)\n", *mode)
+	// Skeleton: the mode resolves through the registry. The concrete
+	// run loop is wired in Tasks 10/11; here we acknowledge and exit
+	// cleanly, preserving the Task 2 contract.
+	fmt.Fprintf(stdout, "peerbus-adapter: mode %q accepted; adapter run loop wired in a later task (skeleton)\n", *mode)
 	return 0
 }
