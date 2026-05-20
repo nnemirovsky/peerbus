@@ -67,6 +67,15 @@ type ResumingClient struct {
 	// previous fully-constructed pointer or the new one, never a torn or
 	// partially-published value. (CRITICAL-3 data-race fix.)
 	cur atomic.Pointer[Client]
+
+	// onConnect, if non-nil, is invoked after every successful (re)register
+	// — once for the initial connect and once per reconnect. The cc adapter
+	// uses this to re-emit its claude/channel self-announce so the
+	// consuming session sees its name even if a mid-session broker drop
+	// forced a redial. Fired in a fresh goroutine so a slow callback (e.g.
+	// one waiting on MCP notifications/initialized) cannot block the
+	// resume loop's Recv pump.
+	onConnect atomic.Pointer[func()]
 }
 
 // NewResumingClient builds a ResumingClient. dedupeSize bounds the shared
@@ -91,8 +100,48 @@ func (rc *ResumingClient) Dedupe() *Dedupe { return rc.dedupe }
 // redial; callers should treat ErrNotConnected as transient.
 func (rc *ResumingClient) Client() *Client { return rc.cur.Load() }
 
+// SetOnConnect installs a callback fired after every successful (re)register
+// — both the initial register and every subsequent reconnect. Pass nil to
+// clear. The callback runs in its own goroutine so a blocking callback (e.g.
+// one waiting on MCP notifications/initialized) does not stall the resume
+// loop's Recv pump. Calling SetOnConnect concurrently with Run is safe; the
+// next successful connect observes the latest value.
+func (rc *ResumingClient) SetOnConnect(fn func()) {
+	if fn == nil {
+		rc.onConnect.Store(nil)
+		return
+	}
+	rc.onConnect.Store(&fn)
+}
+
+// Name returns the peer name this resuming client registers under. It is
+// stable across reconnects (same-name re-register is the resume mechanism)
+// and is the value the broker sees as the "from" of every outbound
+// envelope. Useful for self-identification (bus.peers' {self, peers}
+// shape) without an extra broker round-trip.
+func (rc *ResumingClient) Name() string { return rc.cfg.Name }
+
+// filterSelf returns names with self removed (used so bus.peers does not
+// list the caller in its own peer list). Allocates a new slice; the input
+// is left untouched.
+func filterSelf(names []string, self string) []string {
+	if self == "" {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != self {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // connect (re)establishes a live Client with bounded backoff, returning
-// once connected or when ctx is done.
+// once connected or when ctx is done. A name-claimed-under-different-token
+// rejection is surfaced verbatim (ErrNameClaimed) so the embedding mode can
+// rotate to a fresh name rather than spinning the redial loop forever
+// against a permanent rejection.
 func (rc *ResumingClient) connect(ctx context.Context) (*Client, error) {
 	backoff := baseBackoff
 	for {
@@ -102,7 +151,14 @@ func (rc *ResumingClient) connect(ctx context.Context) (*Client, error) {
 			// Publish the fully-constructed, connected Client with a single
 			// atomic Store (happens-before for any concurrent Client()).
 			rc.cur.Store(c)
+			if cb := rc.onConnect.Load(); cb != nil {
+				// Fire in its own goroutine — see SetOnConnect rationale.
+				go (*cb)()
+			}
 			return c, nil
+		}
+		if errors.Is(err, ErrNameClaimed) {
+			return nil, err
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()

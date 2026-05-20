@@ -110,7 +110,7 @@ func newWiredHarness(t *testing.T, f *brokerFixture, name string) *mcpHarness {
 	// are not lost before register completes.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := bus.Peers(ctx); err == nil {
+		if _, _, err := bus.Peers(ctx); err == nil {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -340,13 +340,20 @@ func TestBusPeersLists(t *testing.T) {
 	if rpcErr != nil || isErr {
 		t.Fatalf("bus.peers failed: rpcErr=%v isErr=%v", rpcErr, isErr)
 	}
+	if self, _ := structured["self"].(string); self != "asker" {
+		t.Fatalf("bus.peers self = %v, want asker", structured["self"])
+	}
 	peersAny, _ := structured["peers"].([]any)
 	got := map[string]bool{}
 	for _, p := range peersAny {
 		got[p.(string)] = true
 	}
-	if !got["asker"] || !got["other"] {
-		t.Fatalf("peers = %v, want asker+other", peersAny)
+	// Self is filtered out of the peers list (bus.peers' new shape).
+	if got["asker"] {
+		t.Fatalf("peers must not include self; got %v", peersAny)
+	}
+	if !got["other"] {
+		t.Fatalf("peers = %v, want other", peersAny)
 	}
 }
 
@@ -637,7 +644,7 @@ type idleBus struct{}
 
 func (idleBus) Send(context.Context, string, json.RawMessage) error { return nil }
 func (idleBus) Broadcast(context.Context, json.RawMessage) error    { return nil }
-func (idleBus) Peers(context.Context) ([]string, error)             { return nil, nil }
+func (idleBus) Peers(context.Context) (string, []string, error)     { return "", nil, nil }
 func (idleBus) Drain(context.Context) ([]mcp.InboundMessage, error) { return nil, nil }
 
 // TestServeReturnsPromptlyOnCtxCancelWithIdleStdin is the MAJOR-R4 regression:
@@ -646,6 +653,76 @@ func (idleBus) Drain(context.Context) ([]mcp.InboundMessage, error) { return nil
 // an idle pipe, so a SIGTERM never made Serve (and thus the adapter mode's
 // Run) return — it hung until SIGKILL. Serve must now return ~immediately
 // when ctx is cancelled even with a blocked, idle input.
+// TestInitializedChannel: Server.Initialized() is open before the client
+// signals initialized and closes exactly when the
+// notifications/initialized client message is dispatched. A second
+// initialized notification is idempotent (close-of-closed channel would
+// panic — sync.Once guards it).
+func TestInitializedChannel(t *testing.T) {
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	srv := mcp.NewServer(idleBus{}, pr, io.Discard)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx) }()
+
+	ch := srv.Initialized()
+	select {
+	case <-ch:
+		t.Fatalf("Initialized() closed before notifications/initialized")
+	default:
+	}
+
+	if _, err := pw.Write([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n")); err != nil {
+		t.Fatalf("write initialized: %v", err)
+	}
+
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Initialized() did not close within 2s of notifications/initialized")
+	}
+
+	// Same channel handed out on every call.
+	if got := srv.Initialized(); got != ch {
+		t.Fatalf("Initialized() returned a different channel on second call")
+	}
+
+	// Idempotent: a second initialized notification must not panic on
+	// close-of-closed.
+	if _, err := pw.Write([]byte(`{"jsonrpc":"2.0","method":"initialized"}` + "\n")); err != nil {
+		t.Fatalf("write second initialized: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+}
+
+// TestInitializedChannelLateSubscriber: Initialized() called AFTER the
+// client has already signalled initialized must return an already-closed
+// channel rather than block forever. (Important for the cc adapter wiring
+// where the OnConnect callback may resolve after handshake.)
+func TestInitializedChannelLateSubscriber(t *testing.T) {
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	srv := mcp.NewServer(idleBus{}, pr, io.Discard)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx) }()
+
+	if _, err := pw.Write([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n")); err != nil {
+		t.Fatalf("write initialized: %v", err)
+	}
+	// Give the dispatcher a moment to process before we subscribe.
+	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case <-srv.Initialized():
+	case <-time.After(2 * time.Second):
+		t.Fatalf("late Initialized() did not observe already-closed channel")
+	}
+}
+
 func TestServeReturnsPromptlyOnCtxCancelWithIdleStdin(t *testing.T) {
 	// An io.Pipe reader with NO writer blocks readMessage indefinitely —
 	// exactly the idle-stdin condition. *io.PipeReader is an io.Closer, so

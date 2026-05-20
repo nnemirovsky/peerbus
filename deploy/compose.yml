@@ -54,11 +54,11 @@ services:
     # adapters on other machines can dial in. Keep the container-side port in
     # sync with PEERBUS_LISTEN below.
     ports:
-      - "8080:8080"
+      - "47821:47821"
     environment:
       # WS bind address inside the container. Bind 0.0.0.0 so the published
-      # port reaches it (the in-code default 127.0.0.1:8080 is loopback-only).
-      PEERBUS_LISTEN: "0.0.0.0:8080"
+      # port reaches it (the in-code default 127.0.0.1:47821 is loopback-only).
+      PEERBUS_LISTEN: "0.0.0.0:47821"
       # Comma-separated static bearer tokens. Provide via .env / secret store,
       # NOT inline. At least one token is required or the broker won't start.
       PEERBUS_TOKENS: "${PEERBUS_TOKENS:?set PEERBUS_TOKENS out-of-band}"

@@ -37,8 +37,8 @@ if [ -r /etc/peerbus/broker.env ]; then
 fi
 
 # Bind a routable address so adapters on other machines can dial in. The
-# in-code default (127.0.0.1:8080) is loopback-only.
-export PEERBUS_LISTEN="${PEERBUS_LISTEN:-0.0.0.0:8080}"
+# in-code default (127.0.0.1:47821) is loopback-only.
+export PEERBUS_LISTEN="${PEERBUS_LISTEN:-0.0.0.0:47821}"
 
 # Durable SQLite store on persistent disk (survives restarts: the
 # at-least-once + audit guarantee). Match the path to your volume mount.

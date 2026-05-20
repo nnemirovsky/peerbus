@@ -41,9 +41,15 @@ const (
 	EnvDBPath     = "PEERBUS_DB"
 )
 
-// DefaultListenAddr is used when neither the struct nor the environment sets a
-// listen address.
-const DefaultListenAddr = "127.0.0.1:8080"
+// DefaultListenAddr is used when neither the struct nor the environment sets
+// a listen address. 47821 was chosen because it is outside the IANA
+// well-known/registered range hot-spots (8080 is the prototypical "I'm
+// already running a tutorial here" port), is absent from macOS
+// /etc/services, and sits well below the OS ephemeral range so a bound
+// listener is unlikely to race a randomly-assigned outbound socket. Bound
+// to loopback by default — operators wanting cross-host access set
+// PEERBUS_LISTEN=0.0.0.0:47821 explicitly.
+const DefaultListenAddr = "127.0.0.1:47821"
 
 // parseTokens splits a comma-separated token list, trimming whitespace and
 // dropping empties.

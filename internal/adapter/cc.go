@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -68,28 +69,31 @@ func (b *ccBus) Broadcast(ctx context.Context, body json.RawMessage) error {
 
 // Peers mirrors the generic adapter's no-second-reader pattern: the resume
 // loop is the SOLE WS reader, so install a one-shot sink the Recv loop
-// forwards the peers reply to rather than reading frames here.
-func (b *ccBus) Peers(ctx context.Context) ([]string, error) {
+// forwards the peers reply to rather than reading frames here. Returns
+// (self, peers, err); see channel.OutboundBus / mcp.Bus for the shape
+// rationale.
+func (b *ccBus) Peers(ctx context.Context) (string, []string, error) {
+	self := b.rc.Name()
 	c := b.rc.Client()
 	if c == nil {
-		return nil, ErrNotConnected
+		return self, nil, ErrNotConnected
 	}
 	sink := make(chan []string, 1)
 	c.SetPeersSink(sink)
 	defer c.SetPeersSink(nil)
 	if err := c.RequestPeers(ctx); err != nil {
-		return nil, err
+		return self, nil, err
 	}
 	select {
 	case names := <-sink:
-		return names, nil
+		return self, filterSelf(names, self), nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return self, nil, ctx.Err()
 	case <-time.After(peersReplyTimeout):
 		// MAJOR-6: bound the wait. Without this a peers reply lost across
 		// a reconnect would block until ctx cancel (forever for a
 		// long-lived cc session).
-		return nil, fmt.Errorf("adapter: peers reply timed out")
+		return self, nil, fmt.Errorf("adapter: peers reply timed out")
 	}
 }
 
@@ -105,6 +109,7 @@ func (b *ccBus) handle(_ context.Context, env wire.Envelope) error {
 		ID:     env.ID,
 		From:   env.From,
 		Source: env.Source,
+		Kind:   string(env.Kind),
 		Body:   env.Body,
 	})
 	return nil
@@ -121,26 +126,95 @@ type ccMode struct {
 
 func (m *ccMode) Name() string { return "cc" }
 
-// Run wires the channel server to a fresh ResumingClient, auto-registers a
-// unique peer name when none was configured (cc2cc-parity ergonomics; see
-// channel.UniqueName for the scheme), starts the resume/dedupe/HMAC loop in
+// nameCollisionRetries bounds the on-startup name-rotation attempts when a
+// freshly-minted friendly name happens to be claimed under a different
+// bearer token (an "essentially impossible" event given the keyspace; see
+// channel.UniqueName). 6 attempts is a conservative safety backstop:
+// independent collisions on each retry are vanishingly unlikely, but
+// bounding the loop prevents a misconfigured environment (e.g. a hostile
+// token-sharing setup) from spinning forever.
+const nameCollisionRetries = 6
+
+// Run wires the channel server to a fresh ResumingClient, auto-mints a
+// friendly peer name when none was configured (channel.UniqueName), retries
+// up to nameCollisionRetries times on the broker's name-claimed rejection
+// (collision-safety backstop), then starts the resume/dedupe/HMAC loop in
 // the background (each inbound delivery becomes a claude/channel push) and
-// serves the stdio MCP protocol in the foreground. When stdin closes the
-// MCP server returns and the resume loop is cancelled.
+// serves the stdio MCP protocol in the foreground. On every successful
+// register the adapter emits ONE system-kind notification carrying the
+// bound name (channel.Server.AnnounceSelf) so the consuming Claude session
+// always knows its own bus identity from turn 1 — no separate bus.whoami
+// round-trip required. When stdin closes the MCP server returns and the
+// resume loop is cancelled.
 func (m *ccMode) Run(ctx context.Context) error {
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 	cfg := m.cfg
 	if cfg.Name == "" {
 		cfg.Name = channel.UniqueName()
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Probe-register up front with name rotation on ErrNameClaimed. Doing
+	// this BEFORE wiring the resume loop avoids a forever-redial spin if
+	// the chosen name is permanently rejected (different-token claim). We
+	// close the probe connection on success: the resume loop redials and
+	// performs its OWN register under the now-validated name. Same-token
+	// takeover (this peer reconnecting) is the entire resume mechanism so
+	// the probe close is harmless.
+	for attempt := 0; ; attempt++ {
+		probe := NewClient(cfg)
+		err := probe.Connect(ctx)
+		if err == nil {
+			probe.Close()
+			break
+		}
+		if !errors.Is(err, ErrNameClaimed) {
+			return err
+		}
+		if attempt >= nameCollisionRetries {
+			return fmt.Errorf("cc: %d friendly-name rotations all rejected (last name %q): %w",
+				nameCollisionRetries+1, cfg.Name, err)
+		}
+		log.Warn("cc: name claimed under different token, rotating",
+			"name", cfg.Name, "attempt", attempt+1)
+		// Operator override (PEERBUS_NAME) is honoured verbatim and
+		// MUST NOT be rotated — a permanent rejection there is a config
+		// problem, not a collision the adapter can paper over.
+		if os.Getenv("PEERBUS_NAME") != "" {
+			return fmt.Errorf("cc: PEERBUS_NAME=%q rejected: %w", cfg.Name, err)
+		}
+		cfg.Name = channel.UniqueName()
+	}
 
 	rc := NewResumingClient(cfg, m.dedupeSize)
 	bus := &ccBus{rc: rc}
 	srv := channel.NewServer(bus, os.Stdin, os.Stdout)
 	bus.srv = srv
+
+	// Self-announcement: emit ONE system-kind claude/channel push per
+	// successful (re)register, BUT only after the MCP client has signalled
+	// notifications/initialized. Claude Code silently drops
+	// claude/channel notifications received before the handshake completes
+	// (CHANNELS_SCHEMA.md §3) — that was the original bug where the
+	// connected-as banner never appeared in turn 1 and the consuming agent
+	// fell back to memsearch for a stale name. SetOnConnect runs its
+	// callback in a fresh goroutine, so the <-initialized wait does not
+	// stall the resume loop's Recv pump. Re-announcing on each reconnect
+	// (rather than only the first) keeps the banner reliable across
+	// mid-session broker drops — by the time a reconnect happens the
+	// session is already past initialized, so the wait is a no-op.
+	initialized := srv.Initialized()
+	rc.SetOnConnect(func() {
+		select {
+		case <-initialized:
+		case <-ctx.Done():
+			return
+		}
+		srv.AnnounceSelf(rc.Name())
+	})
 
 	done := make(chan struct{})
 	go func() {

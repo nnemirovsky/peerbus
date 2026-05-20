@@ -20,19 +20,6 @@ Messages are peer-to-peer and out-of-band: peerbus moves messages *between alrea
 
 **Honest taxonomy:** this is a **custom MCP-channel peer bus**. It is *conceptually* A2A-shaped — peer agents, asynchronous messages, human escalation handled by the peer rather than the bus — but it is **not** an implementation of Zed's [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) nor of the Google / Linux Foundation [Agent2Agent (A2A)](https://github.com/a2aproject/A2A) specification. peerbus defines and implements its own small WebSocket wire protocol (see [`docs/wire-protocol.md`](docs/wire-protocol.md)); it borrows the *shape* of A2A-style peer messaging but ships none of those specs' types, handshakes, or guarantees. peerbus is its own bus, not an ACP/A2A implementation.
 
-## Migration: v0.1.0 → v0.2.0 (single binary)
-
-v0.1.0 shipped two binaries (`peerbus-broker` and `peerbus-adapter`). v0.2.0 collapses them into **one** `peerbus` multi-command binary (git/kubectl style). Every flag and every env var inside each subcommand is preserved — only the dispatch shell changed. Pre-1.0, this is a breaking CLI rename; the wire protocol, security model, and on-disk store are unchanged.
-
-| v0.1.0                                  | v0.2.0                            |
-| --------------------------------------- | --------------------------------- |
-| `peerbus-broker serve`                  | `peerbus serve`                   |
-| `peerbus-broker audit verify`           | `peerbus audit verify`            |
-| `peerbus-adapter --adapter=cc`          | `peerbus adapter --adapter=cc`      |
-| `peerbus-adapter --adapter=generic`     | `peerbus adapter --adapter=generic` |
-
-If you wired an adapter in `.mcp.json`, swap `"command": "peerbus-adapter", "args": ["--adapter=cc"]` for `"command": "peerbus", "args": ["adapter", "--adapter=cc"]` (note: **two** args now, since `adapter` is a subcommand). The Docker image still runs the broker by default — its `ENTRYPOINT`+`CMD` is now `peerbus serve`.
-
 ## How It Works
 
 Two parts: a **broker** and **adapters**.
@@ -87,7 +74,7 @@ Broker configuration (struct defaults, overridden by env):
 
 | Env var               | Meaning                                                         |
 | --------------------- | --------------------------------------------------------------- |
-| `PEERBUS_LISTEN`      | WS server bind address (`host:port`, default `127.0.0.1:8080`). |
+| `PEERBUS_LISTEN`      | WS server bind address (`host:port`, default `127.0.0.1:47821`). |
 | `PEERBUS_TOKENS`      | Comma-separated accepted static bearer tokens (at least one).   |
 | `PEERBUS_HMAC_SECRET` | Shared end-to-end HMAC-SHA256 secret (min 32 bytes enforced).   |
 | `PEERBUS_DB`          | Durable SQLite store path (default `peerbus.db`).               |
@@ -115,7 +102,7 @@ The same `peerbus` binary runs the adapter — pick the mode at launch with `pee
       "command": "peerbus",
       "args": ["adapter", "--adapter=generic"],
       "env": {
-        "PEERBUS_URL": "ws://broker-host:8080",
+        "PEERBUS_URL": "ws://broker-host:47821",
         "PEERBUS_NAME": "hermes-prod",
         "PEERBUS_TOKEN": "<static bearer token>",
         "PEERBUS_HMAC_SECRET": "<shared end-to-end HMAC secret>"
@@ -127,7 +114,7 @@ The same `peerbus` binary runs the adapter — pick the mode at launch with `pee
 
 Tools: `bus.send` (direct), `bus.broadcast` (fan-out), `bus.peers` (list), `bus.drain` (return + ack pending — the host calls this on its own schedule). Full guide: [`docs/integrations/generic-adapter.md`](docs/integrations/generic-adapter.md). Recommended timed self-drain + escalation pattern for Hermes: [`docs/integrations/hermes-drain-skill.md`](docs/integrations/hermes-drain-skill.md).
 
-**An interactive Claude Code session** uses `peerbus adapter --adapter=cc` instead. It is the MCP `claude/channel` server; inbound is a push-wake that creates a turn in an idle session (no `bus.drain`). Register it in `.mcp.json` as a server named `peerbus`, same env vars as generic but leave `PEERBUS_NAME` empty to auto-register `cc-<host>-<pid>-<rand>`:
+**An interactive Claude Code session** uses `peerbus adapter --adapter=cc` instead. It is the MCP `claude/channel` server; inbound is a push-wake that creates a turn in an idle session (no `bus.drain`). Register it in `.mcp.json` as a server named `peerbus`, same env vars as generic but leave `PEERBUS_NAME` empty to auto-register a friendly `<adjective>-<noun>-<3-char-suffix>` name (e.g. `wild-wasp-3kx`). On startup the adapter pushes a system-kind notification announcing its bound name, and `bus.peers` returns `{ self, peers }` so the session always knows its own bus identity:
 
 ```json
 {
@@ -136,7 +123,7 @@ Tools: `bus.send` (direct), `bus.broadcast` (fan-out), `bus.peers` (list), `bus.
       "command": "peerbus",
       "args": ["adapter", "--adapter=cc"],
       "env": {
-        "PEERBUS_URL": "ws://broker-host:8080",
+        "PEERBUS_URL": "ws://broker-host:47821",
         "PEERBUS_NAME": "",
         "PEERBUS_TOKEN": "<static bearer token>",
         "PEERBUS_HMAC_SECRET": "<shared end-to-end HMAC secret>"

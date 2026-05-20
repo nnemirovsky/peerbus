@@ -1,7 +1,6 @@
 package main
 
-// `adapter` subcommand. Ported verbatim from the v0.1.0
-// cmd/peerbus-adapter/main.go — same --adapter dispatch, same env vars, same
+// `adapter` subcommand: --adapter dispatch over PEERBUS_* env, with
 // fail-fast guards (missing URL/Token, short HMAC, empty generic name).
 
 import (
@@ -20,8 +19,7 @@ import (
 )
 
 // envClientConfig is split out so the env→ClientConfig mapping is testable
-// and the variable names live in exactly one place. Matches v0.1.0
-// peerbus-adapter behaviour verbatim.
+// and the variable names live in exactly one place.
 func envClientConfig() adapter.ClientConfig {
 	return adapter.ClientConfig{
 		URL:        os.Getenv("PEERBUS_URL"),
@@ -33,8 +31,7 @@ func envClientConfig() adapter.ClientConfig {
 
 // adapterRun parses adapter flags, builds the broker client config from the
 // environment, resolves + constructs the mode, and runs it until a
-// termination signal or the host closes stdio. Returns a process exit code.
-// Behaviour mirrors v0.1.0 `peerbus-adapter --adapter=<mode>` exactly:
+// termination signal or the host closes stdio. Returns a process exit code:
 //
 //   - missing or unknown --adapter           → exit 2
 //   - missing PEERBUS_URL or PEERBUS_TOKEN   → exit 2
@@ -98,7 +95,8 @@ func adapterRun(args []string, stdout, stderr io.Writer) int {
 	// Generic mode binds a fixed peer name and has no auto-name fallback
 	// (only cc auto-generates one). An empty PEERBUS_NAME there is rejected
 	// at broker register on every attempt → reconnect spin; fail fast
-	// instead. cc tolerates an empty name (mints cc-<host>-<pid>-<rand>).
+	// instead. cc tolerates an empty name (mints a friendly
+	// <adjective>-<noun>-<3 base36> name; see internal/channel.UniqueName).
 	if *mode == "generic" && cfg.Name == "" {
 		_, _ = fmt.Fprintln(stderr, "peerbus: PEERBUS_NAME is required for --adapter=generic")
 		return 2

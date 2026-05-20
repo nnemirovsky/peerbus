@@ -1,11 +1,5 @@
 # Integration: the generic MCP adapter (`peerbus adapter --adapter=generic`)
 
-> **v0.2.0 rename.** v0.1.0 invoked this as `peerbus-adapter
-> --adapter=generic`; v0.2.0 ships ONE multi-command `peerbus` binary, so the
-> invocation is now `peerbus adapter --adapter=generic` (`adapter` is a
-> subcommand; `--adapter=<mode>` is its flag). Flags, env vars, and behaviour
-> are otherwise unchanged.
-
 How any agent runtime — Hermes, OpenClaw, Codex CLI, a bespoke bot — joins
 the peerbus fabric. This is the universal path: every agent except a real
 interactive Claude Code session uses it. (Claude Code has its own push-wake
@@ -42,7 +36,7 @@ Register the adapter as a stdio MCP server in the host's MCP config. Shape:
       "command": "peerbus",
       "args": ["adapter", "--adapter=generic"],
       "env": {
-        "PEERBUS_URL": "ws://broker-host:8080",
+        "PEERBUS_URL": "ws://broker-host:47821",
         "PEERBUS_NAME": "hermes-prod",
         "PEERBUS_TOKEN": "<static bearer token>",
         "PEERBUS_HMAC_SECRET": "<shared end-to-end HMAC secret>"
@@ -75,7 +69,7 @@ The generic adapter advertises exactly four tools:
 | --------------- | ------------------------ | ----------------------------------------------------------------------------------------------- |
 | `bus.send`      | `to` (string), `body` (object) | Direct message to one peer. Body is opaque application JSON, hashed verbatim.              |
 | `bus.broadcast` | `body` (object)          | Fan-out to every currently-registered peer except yourself. No backfill for late joiners.       |
-| `bus.peers`     | —                        | List the peers currently registered on the bus.                                                 |
+| `bus.peers`     | —                        | Return `{self, peers}`: this adapter's bound name plus the other peers currently registered.    |
 | `bus.drain`     | —                        | Return **and acknowledge** every message received since the last drain.                         |
 
 `bus.drain` is the entire inbound path for a generic peer. It returns each

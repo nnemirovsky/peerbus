@@ -92,7 +92,7 @@ type genericPeer struct {
 	bus interface { // subset of mcp.Bus exercised here
 		Send(ctx context.Context, to string, body json.RawMessage) error
 		Broadcast(ctx context.Context, body json.RawMessage) error
-		Peers(ctx context.Context) ([]string, error)
+		Peers(ctx context.Context) (string, []string, error)
 	}
 	drain func(ctx context.Context) ([]drainMsg, error)
 	stop  func()
@@ -135,7 +135,7 @@ func newGenericPeer(t *testing.T, f *brokerFixture, name string) *genericPeer {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := bus.Peers(ctx); err == nil {
+		if _, _, err := bus.Peers(ctx); err == nil {
 			return p
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -185,24 +185,31 @@ func (b *ccBus) Broadcast(ctx context.Context, body json.RawMessage) error {
 		time.Now().UTC().Format(time.RFC3339Nano), "peer-bus", body)
 }
 
-func (b *ccBus) Peers(ctx context.Context) ([]string, error) {
+func (b *ccBus) Peers(ctx context.Context) (string, []string, error) {
+	self := b.rc.Name()
 	c := b.rc.Client()
 	if c == nil {
-		return nil, adapter.ErrNotConnected
+		return self, nil, adapter.ErrNotConnected
 	}
 	sink := make(chan []string, 1)
 	c.SetPeersSink(sink)
 	defer c.SetPeersSink(nil)
 	if err := c.RequestPeers(ctx); err != nil {
-		return nil, err
+		return self, nil, err
 	}
 	select {
 	case names := <-sink:
-		return names, nil
+		out := make([]string, 0, len(names))
+		for _, n := range names {
+			if n != self {
+				out = append(out, n)
+			}
+		}
+		return self, out, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return self, nil, ctx.Err()
 	case <-time.After(5 * time.Second):
-		return nil, context.DeadlineExceeded
+		return self, nil, context.DeadlineExceeded
 	}
 }
 
@@ -247,7 +254,10 @@ func newCCPeer(t *testing.T, f *brokerFixture, name string) (peer *ccPeer, regis
 	go func() {
 		defer close(loopDone)
 		_ = rc.Run(ctx, func(_ context.Context, env wire.Envelope) error {
-			srv.Deliver(channel.Inbound{ID: env.ID, From: env.From, Source: env.Source, Body: env.Body})
+			srv.Deliver(channel.Inbound{
+				ID: env.ID, From: env.From, Source: env.Source,
+				Kind: string(env.Kind), Body: env.Body,
+			})
 			return nil
 		})
 	}()
@@ -290,7 +300,7 @@ func newCCPeer(t *testing.T, f *brokerFixture, name string) (peer *ccPeer, regis
 	// Wait for a live broker connection so injected messages are not lost.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := bus.Peers(ctx); err == nil {
+		if _, _, err := bus.Peers(ctx); err == nil {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -373,32 +383,43 @@ func TestParity_AutoRegisterUniqueName(t *testing.T) {
 	a := newGenericPeer(t, f, "alpha")
 	b := newGenericPeer(t, f, "bravo")
 
-	names, err := a.bus.Peers(ctx)
+	self, names, err := a.bus.Peers(ctx)
 	if err != nil {
 		t.Fatalf("peers: %v", err)
 	}
+	if self != "alpha" {
+		t.Fatalf("bus.Peers self = %q, want alpha", self)
+	}
+	// bus.Peers filters self out; only "bravo" should appear (an observing
+	// rawClient sees the full registry — see TestParity_CCAutoRegisterUniqueName).
 	got := map[string]bool{}
 	for _, n := range names {
 		got[n] = true
 	}
-	if !got["alpha"] || !got["bravo"] {
-		t.Fatalf("registry = %v, want alpha+bravo bound under their unique names", names)
+	if got["alpha"] {
+		t.Fatalf("bus.Peers must not list self %q; got %v", "alpha", names)
+	}
+	if !got["bravo"] {
+		t.Fatalf("registry = %v, want bravo bound under its unique name", names)
 	}
 	_ = b
 }
 
 // TestParity_CCAutoRegisterUniqueName: a cc adapter launched with NO
-// configured name auto-registers a minted unique name (channel.UniqueName,
-// cc-<host>-<pid>-<rand>) and that name is visible in the broker registry —
-// the cc-side of the cc2cc auto-register/unique-name parity row.
+// configured name auto-registers a minted unique friendly name
+// (channel.UniqueName: "<adjective>-<noun>-<3 base36>") and that name is
+// visible in the broker registry — the cc-side of the cc2cc
+// auto-register/unique-name parity row.
 func TestParity_CCAutoRegisterUniqueName(t *testing.T) {
 	f := newBrokerFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	_, name1 := newCCPeer(t, f, "") // "" => channel.UniqueName()
-	if !strings.HasPrefix(name1, "cc-") {
-		t.Fatalf("auto-registered name %q lacks cc- prefix", name1)
+	// Shape check: lowercase three-part hyphenated identifier. The exact
+	// adjective/noun corpus is intentionally an implementation detail.
+	if !looksLikeFriendlyName(name1) {
+		t.Fatalf("auto-registered name %q is not a <adj>-<noun>-<suffix> shape", name1)
 	}
 
 	// A second auto-registered cc peer must mint a DISTINCT name.
@@ -423,6 +444,28 @@ func TestParity_CCAutoRegisterUniqueName(t *testing.T) {
 	}
 }
 
+// looksLikeFriendlyName checks the auto-minted-name shape:
+// lowercase letters / digits split into exactly three hyphenated parts. Used
+// instead of pinning a specific corpus so the adjective/noun lists can grow
+// without churning the parity test.
+func looksLikeFriendlyName(s string) bool {
+	parts := strings.Split(s, "-")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for _, r := range p {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // ── Row 2: peer discovery ──
 
 // TestParity_PeerDiscovery: a generic adapter sees every other live peer via
@@ -436,16 +479,25 @@ func TestParity_PeerDiscovery(t *testing.T) {
 	defer other.Close()
 
 	asker := newGenericPeer(t, f, "asker")
-	names, err := asker.bus.Peers(ctx)
+	self, names, err := asker.bus.Peers(ctx)
 	if err != nil {
 		t.Fatalf("peers: %v", err)
 	}
+	if self != "asker" {
+		t.Fatalf("bus.Peers self = %q, want asker", self)
+	}
+	// "asker" is filtered out by bus.Peers; only "discoverable" should
+	// surface (cc2cc's peer-discovery semantic is "see the OTHERS", not
+	// "see yourself in the list").
 	got := map[string]bool{}
 	for _, n := range names {
 		got[n] = true
 	}
-	if !got["asker"] || !got["discoverable"] {
-		t.Fatalf("peers = %v, want asker+discoverable", names)
+	if got["asker"] {
+		t.Fatalf("peers must not include self; got %v", names)
+	}
+	if !got["discoverable"] {
+		t.Fatalf("peers = %v, want discoverable", names)
 	}
 }
 
@@ -784,13 +836,22 @@ func TestParity_CCPushWakeNotification(t *testing.T) {
 	if pf.Method != "notifications/claude/channel" {
 		t.Fatalf("method = %q, want notifications/claude/channel", pf.Method)
 	}
-	if pf.Params.Content != "wake up, there is a decision to make" {
-		t.Fatalf("content = %q", pf.Params.Content)
+	// Single-line content (see internal/channel.formatInbound):
+	// `📨 <kind> from <from>: "<body>"`. The body is a JSON string so
+	// decodeBody unwraps it to plain text. The exact prefix is the
+	// contract; only assert it (the kind/from/body decoding is verified
+	// by internal/channel's unit tests in detail).
+	if !strings.HasPrefix(pf.Params.Content, "\U0001F4E8 msg from tx: ") {
+		t.Fatalf("content prefix = %q, want single-line banner", pf.Params.Content)
+	}
+	if !strings.Contains(pf.Params.Content, "wake up, there is a decision to make") {
+		t.Fatalf("content missing decoded body: %q", pf.Params.Content)
 	}
 	if pf.Params.Meta["from"] != "tx" ||
 		pf.Params.Meta["source"] != "peer-bus" ||
-		pf.Params.Meta["msg_id"] != "wake-1" {
-		t.Fatalf("meta = %v, want from=tx source=peer-bus msg_id=wake-1", pf.Params.Meta)
+		pf.Params.Meta["msg_id"] != "wake-1" ||
+		pf.Params.Meta["kind"] != "msg" {
+		t.Fatalf("meta = %v, want from=tx source=peer-bus msg_id=wake-1 kind=msg", pf.Params.Meta)
 	}
 
 	// EXACTLY ONE notification: a duplicate id never re-pushes (broker

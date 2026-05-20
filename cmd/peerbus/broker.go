@@ -1,8 +1,7 @@
 package main
 
-// Broker subcommands: `serve` and `audit verify`. Ported verbatim from the
-// v0.1.0 cmd/peerbus-broker/main.go — same flags, same env precedence, same
-// exit codes (audit verify still exits 0 intact / 1 break / 2 operational).
+// Broker subcommands: `serve` and `audit verify`. Exit codes for audit
+// verify: 0 intact, 1 a break was found, 2 operational error.
 
 import (
 	"context"
@@ -20,15 +19,13 @@ import (
 	"github.com/nnemirovsky/peerbus/internal/version"
 )
 
-// defaultDBPath is the store location used when --db is not given. Matches
-// the v0.1.0 broker default.
+// defaultDBPath is the store location used when --db is not given.
 const defaultDBPath = "peerbus.db"
 
 // brokerServe parses serve-subcommand flags, loads broker config from env
 // (env-overrides-struct precedence; see internal/broker.LoadConfig), and
 // runs the WebSocket broker until SIGINT/SIGTERM. Exit 0 on clean shutdown,
-// 2 on config/operational error. Behaviour mirrors v0.1.0 `peerbus-broker
-// serve` exactly.
+// 2 on config/operational error.
 func brokerServe(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("peerbus serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -84,9 +81,8 @@ func brokerServe(args []string, stdout, stderr io.Writer) int {
 
 // brokerAuditVerify implements the `audit verify` subcommand. The first
 // positional arg must be the literal verb "verify"; the --db flag is
-// accepted EITHER before or after the verb (matches the v0.1.0 broker's
-// flag-before-subcommand calling convention and its tests which pass
-// `--db PATH audit verify` and bare `audit`).
+// accepted EITHER before or after the verb so callers may pass either
+// `audit verify --db PATH` or `--db PATH audit verify`.
 //
 // Exit codes: 0 chain intact, 1 a break was found, 2 usage/operational
 // error.
