@@ -105,24 +105,31 @@ func (b *genericBus) Broadcast(ctx context.Context, body json.RawMessage) error 
 // the WS connection, so this must NOT read frames itself (two readers split
 // frames and deadlock). It installs a one-shot sink the Recv loop forwards
 // the peers reply to, writes the request, and waits for the sink.
-func (b *genericBus) Peers(ctx context.Context) ([]string, error) {
+//
+// Returns (self, peers, err). self is THIS adapter's bound name (b.rc.Name()
+// — stable across reconnects); peers is the broker registry with self
+// filtered out so the consuming agent does not see itself in its own peer
+// list. The combined {self, peers} shape lets bus.peers also serve as
+// whoami without a second tool call.
+func (b *genericBus) Peers(ctx context.Context) (string, []string, error) {
+	self := b.rc.Name()
 	c := b.rc.Client()
 	if c == nil {
-		return nil, ErrNotConnected
+		return self, nil, ErrNotConnected
 	}
 	sink := make(chan []string, 1)
 	c.SetPeersSink(sink)
 	defer c.SetPeersSink(nil)
 	if err := c.RequestPeers(ctx); err != nil {
-		return nil, err
+		return self, nil, err
 	}
 	select {
 	case names := <-sink:
-		return names, nil
+		return self, filterSelf(names, self), nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return self, nil, ctx.Err()
 	case <-time.After(peersReplyTimeout):
-		return nil, fmt.Errorf("adapter: peers reply timed out")
+		return self, nil, fmt.Errorf("adapter: peers reply timed out")
 	}
 }
 

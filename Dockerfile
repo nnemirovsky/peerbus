@@ -37,15 +37,15 @@ COPY --from=build /out/peerbus /usr/local/bin/peerbus
 # volume at /data. PEERBUS_DB should point here (see deploy/compose.yml).
 VOLUME ["/data"]
 # Broker config is read from PEERBUS_* env (see internal/broker/config.go):
-#   PEERBUS_LISTEN       WS bind host:port (default 127.0.0.1:8080; set
-#                        0.0.0.0:8080 in a container so the published port
+#   PEERBUS_LISTEN       WS bind host:port (default 127.0.0.1:47821; set
+#                        0.0.0.0:47821 in a container so the published port
 #                        reaches it)
 #   PEERBUS_TOKENS       comma-separated static bearer tokens (>=1 required)
 #   PEERBUS_HMAC_SECRET  shared end-to-end HMAC-SHA256 secret (min length
 #                        enforced; broker refuses to start otherwise)
 #   PEERBUS_DB           durable SQLite path (point at /data)
 # Default WS port. Keep in sync with PEERBUS_LISTEN.
-EXPOSE 8080
+EXPOSE 47821
 # No HEALTHCHECK: the broker exposes no health endpoint/subcommand and the
 # distroless image ships no shell or probe tooling. `restart: always` plus
 # the broker's crash-on-misconfig (missing token / short HMAC secret exits

@@ -1,17 +1,17 @@
 // Command peerbus is the single multi-command binary for the peerbus
-// project. It collapses the v0.1.0 cmd/peerbus-broker and cmd/peerbus-adapter
-// into one git/kubectl-style dispatcher.
+// project: one git/kubectl-style dispatcher for the broker and adapter
+// subcommands.
 //
-// Subcommands (each preserves its v0.1.0 flag/env contract verbatim):
+// Subcommands:
 //
 //	serve                       start the WebSocket broker (token auth + peer
 //	                            registry + direct/broadcast routing, offline
-//	                            queue, ack/redelivery). Was: peerbus-broker serve.
-//	audit verify [--db PATH]    walk the blake3 hash-chain audit log and report
-//	                            any break. Was: peerbus-broker audit verify.
+//	                            queue, ack/redelivery).
+//	audit verify [--db PATH]    walk the blake3 hash-chain audit log and
+//	                            report any break.
 //	adapter --adapter=<mode>    run the adapter (mode resolved through the
 //	                            additive --adapter dispatch registry; today:
-//	                            cc | generic). Was: peerbus-adapter --adapter=<mode>.
+//	                            cc | generic).
 //
 // Top-level flags:
 //
@@ -41,9 +41,8 @@ func main() {
 // (brokerServe, brokerAuditVerify, adapterRun) is also independently
 // testable.
 func dispatch(args []string, stdout, stderr io.Writer) int {
-	// Top-level --version MUST work BEFORE subcommand parsing — matches the
-	// v0.1.0 behaviour of both old mains (`peerbus-broker --version` and
-	// `peerbus-adapter --version` both printed version and exited 0).
+	// Top-level --version MUST work BEFORE subcommand parsing so
+	// `peerbus --version` is answerable without a subcommand.
 	if len(args) > 0 {
 		switch args[0] {
 		case "--version", "-version":

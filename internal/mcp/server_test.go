@@ -110,7 +110,7 @@ func newWiredHarness(t *testing.T, f *brokerFixture, name string) *mcpHarness {
 	// are not lost before register completes.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := bus.Peers(ctx); err == nil {
+		if _, _, err := bus.Peers(ctx); err == nil {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -340,13 +340,20 @@ func TestBusPeersLists(t *testing.T) {
 	if rpcErr != nil || isErr {
 		t.Fatalf("bus.peers failed: rpcErr=%v isErr=%v", rpcErr, isErr)
 	}
+	if self, _ := structured["self"].(string); self != "asker" {
+		t.Fatalf("bus.peers self = %v, want asker", structured["self"])
+	}
 	peersAny, _ := structured["peers"].([]any)
 	got := map[string]bool{}
 	for _, p := range peersAny {
 		got[p.(string)] = true
 	}
-	if !got["asker"] || !got["other"] {
-		t.Fatalf("peers = %v, want asker+other", peersAny)
+	// Self is filtered out of the peers list (bus.peers' new shape).
+	if got["asker"] {
+		t.Fatalf("peers must not include self; got %v", peersAny)
+	}
+	if !got["other"] {
+		t.Fatalf("peers = %v, want other", peersAny)
 	}
 }
 
@@ -637,7 +644,7 @@ type idleBus struct{}
 
 func (idleBus) Send(context.Context, string, json.RawMessage) error { return nil }
 func (idleBus) Broadcast(context.Context, json.RawMessage) error    { return nil }
-func (idleBus) Peers(context.Context) ([]string, error)             { return nil, nil }
+func (idleBus) Peers(context.Context) (string, []string, error)     { return "", nil, nil }
 func (idleBus) Drain(context.Context) ([]mcp.InboundMessage, error) { return nil, nil }
 
 // TestServeReturnsPromptlyOnCtxCancelWithIdleStdin is the MAJOR-R4 regression:

@@ -20,13 +20,21 @@
 // by the SHARED internal/adapter machinery — see internal/adapter/cc.go) is
 // mapped to a JSON-RPC notification `notifications/claude/channel` with
 //
-//	params = { content: <message body as text>,
-//	           meta: { from, source, msg_id } }   (all meta values strings)
+//	params = { content: <pretty multi-line summary>,
+//	           meta:    { from, source, msg_id, kind } }
 //
 // emitted via mcp.Server.Notify (the additive server->client path). meta
 // keys are identifier-safe (letters/digits/underscore only) per
 // CHANNELS_SCHEMA.md §3 — keys with hyphens are silently dropped by Claude
-// Code, so we use from / source / msg_id.
+// Code, so we use from / source / msg_id / kind. The pretty content shape
+// (📨 banner + From/Type/Content lines) mirrors cc2cc's per-message render
+// so a session reading peerbus and cc2cc traffic side-by-side sees a
+// uniform layout; see formatInbound.
+//
+// On a successful broker register the cc adapter also emits ONE system-kind
+// notification (kind="system", content "📡 peerbus: connected as <name>")
+// so the consuming agent immediately knows its own bus name without an
+// explicit bus.whoami round-trip — see AnnounceSelf.
 //
 // Outbound (reply path): standard MCP tools/list + tools/call exposing
 // bus.send / bus.broadcast / bus.peers — the SAME tool surface and
@@ -45,11 +53,11 @@ package channel
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/nnemirovsky/peerbus/internal/mcp"
 )
@@ -58,21 +66,31 @@ import (
 // to. internal/adapter/cc.go implements it over the shared resuming broker
 // client (HMAC sign + reconnect/resume) — the channel layer never touches
 // the broker, HMAC, or dedupe itself.
+//
+// Peers returns (self, peers, err): self is THIS adapter's bound peer name
+// (so bus.peers can echo it back in the shaped {self, peers} result without
+// a separate bus.whoami round-trip); peers is the broker registry sans the
+// caller's own entry (filtered at the bus implementation — the broker
+// returns the full registry including this peer, and exposing yourself in
+// "peers" is confusing for the consuming agent).
 type OutboundBus interface {
 	Send(ctx context.Context, to string, body json.RawMessage) error
 	Broadcast(ctx context.Context, body json.RawMessage) error
-	Peers(ctx context.Context) ([]string, error)
+	Peers(ctx context.Context) (self string, peers []string, err error)
 }
 
 // Inbound is one already-HMAC-verified, already-deduped delivery the cc
 // adapter pushes into the session. Source is the envelope `source` (e.g.
 // "peer-bus" — the tag the consuming agent's prompt keys escalation off;
-// peerbus itself has no such logic). Body is the opaque application JSON
-// verbatim.
+// peerbus itself has no such logic). Kind is the envelope `kind` ("msg" or
+// "broadcast") so the channel layer can surface it as the <channel> XML
+// kind attribute without re-decoding the body. Body is the opaque
+// application JSON verbatim.
 type Inbound struct {
 	ID     string
 	From   string
 	Source string
+	Kind   string
 	Body   json.RawMessage
 }
 
@@ -100,7 +118,7 @@ func (b busAdapter) Broadcast(ctx context.Context, body json.RawMessage) error {
 	return b.out.Broadcast(ctx, body)
 }
 
-func (b busAdapter) Peers(ctx context.Context) ([]string, error) {
+func (b busAdapter) Peers(ctx context.Context) (string, []string, error) {
 	return b.out.Peers(ctx)
 }
 
@@ -132,51 +150,162 @@ func (s *Server) Serve(ctx context.Context) error { return s.mcp.Serve(ctx) }
 
 // Deliver maps one inbound broker delivery to a claude/channel push-wake
 // notification and emits it (DOCUMENTED — CHANNELS_SCHEMA.md §3). content is
-// the message body as text; meta carries identifier-safe string attributes
-// (from / source / msg_id) that Claude Code surfaces as <channel> XML
-// attributes. The body is opaque JSON: if it is a JSON string we unwrap it
-// to its text so the session sees plain text, otherwise the compact JSON is
-// passed through verbatim.
+// a multi-line human-readable summary of the inbound message (see
+// formatInbound); meta carries identifier-safe string attributes
+// (from / source / msg_id / kind) that Claude Code surfaces as <channel> XML
+// attributes.
+//
+// "kind" is "msg" for direct messages and "broadcast" for fan-outs; the
+// channel layer takes the kind from the inbound envelope so the consuming
+// agent's prompt can branch on it without re-parsing the body.
 func (s *Server) Deliver(in Inbound) {
 	s.mcp.Notify(PushMethod, PushParams{
-		Content: bodyAsText(in.Body),
+		Content: formatInbound(in),
 		Meta: map[string]string{
 			"from":   in.From,
 			"source": in.Source,
 			"msg_id": in.ID,
+			"kind":   in.Kind,
 		},
 	})
 }
 
-// bodyAsText renders an opaque body for the channel `content` string. A JSON
-// string body is unwrapped to its raw text (so Claude sees the message, not
-// a quoted JSON literal); anything else is passed through as compact JSON.
-func bodyAsText(body json.RawMessage) string {
+// AnnounceSelf emits a single system-kind claude/channel notification
+// telling the session what peer name this adapter bound under. It is fired
+// ONCE per successful register (the cc adapter's resume loop calls it after
+// each successful register — the design's "self-identification on startup"
+// guarantee). meta.kind is "system" so the consuming agent can ignore it
+// from human-style escalation logic.
+func (s *Server) AnnounceSelf(self string) {
+	s.mcp.Notify(PushMethod, PushParams{
+		Content: fmt.Sprintf("\U0001F4E1 peerbus: connected as %s", self),
+		Meta: map[string]string{
+			"kind": "system",
+			"self": self,
+		},
+	})
+}
+
+// formatInbound renders the pretty multi-line channel content from one
+// inbound delivery. The shape matches cc2cc's per-message banner so a
+// session reading peerbus traffic and cc2cc traffic side-by-side sees a
+// uniform layout. The "kind" line is "msg" for direct messages and
+// "broadcast" for fan-outs (defaults to "msg" if unset for safety — an
+// older sender that pre-dates the kind field still renders cleanly).
+func formatInbound(in Inbound) string {
+	kind := in.Kind
+	if kind == "" {
+		kind = "msg"
+	}
+	var b strings.Builder
+	b.WriteString("\U0001F4E8 peerbus message\n")
+	b.WriteString("From: ")
+	b.WriteString(in.From)
+	b.WriteString("\n")
+	b.WriteString("Type: ")
+	b.WriteString(kind)
+	b.WriteString("\n")
+	b.WriteString("Content: ")
+	b.WriteString(decodeBody(in.Body))
+	return b.String()
+}
+
+// decodeBody renders an opaque body for the pretty channel content. Rules,
+// applied IN ORDER:
+//
+//  1. body is a JSON string  -> unwrap to the inner string.
+//  2. body is a JSON object containing "text" / "message" / "content"
+//     (first match wins) -> use that field's value (stringify if non-string).
+//  3. otherwise -> compact-encode the body JSON as-is.
+//
+// An empty body renders as the empty string.
+func decodeBody(body json.RawMessage) string {
 	if len(body) == 0 {
 		return ""
 	}
+	// (1) plain JSON string.
 	var s string
 	if err := json.Unmarshal(body, &s); err == nil {
 		return s
 	}
+	// (2) JSON object with a known text-bearing field.
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err == nil {
+		for _, key := range []string{"text", "message", "content"} {
+			if raw, ok := obj[key]; ok {
+				var str string
+				if err := json.Unmarshal(raw, &str); err == nil {
+					return str
+				}
+				// non-string field value: pass through as compact JSON.
+				return string(raw)
+			}
+		}
+	}
+	// (3) compact JSON verbatim.
 	return string(body)
 }
 
-// UniqueName generates a stable-ish unique peer name for auto-registration
-// (cc2cc-parity ergonomics) when no name is configured. Scheme:
+// nameSuffixAlphabet is the base36 alphabet used for the 3-char random
+// suffix in UniqueName. Lowercase to match the rest of the name.
+const nameSuffixAlphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+// nameSuffixLen is the length of the random suffix in a generated name.
+// 3 chars in base36 = 46656 distinct suffixes per (adjective, noun) pair.
+// Combined with ~200 adjectives and ~200 nouns the total keyspace is
+// ~1.86 billion combinations, so a same-token collision (two adapters
+// independently minting the same name and then needing to reconcile via
+// the registry's same-token takeover) is essentially impossible. The
+// adapter's collision-retry loop on ErrNameClaimed (a different-token
+// claim) is therefore a defence-in-depth backstop, not the primary safety
+// mechanism — see internal/adapter/cc.go.
+const nameSuffixLen = 3
+
+// UniqueName mints a friendly, lowercase peer name in the shape
+// "<adjective>-<noun>-<3 base36>" (e.g. "wild-wasp-3kx"). It honours the
+// PEERBUS_NAME environment variable verbatim when set (operator override),
+// otherwise draws fresh entropy via crypto/rand.
 //
-//	cc-<hostname>-<pid>-<6 hex random>
-//
-// hostname+pid make it readable and naturally distinct per session/host;
-// the random suffix breaks ties if two sessions on the same host race the
-// same pid reuse across a restart. Documented here so the scheme is part of
-// the contract, not an implementation accident.
+// The scheme replaces the older "cc-<hostname>-<pid>-<rand>" identifier —
+// friendlier to read in logs / lists / Claude Code's <channel> tag while
+// keeping a huge keyspace.
 func UniqueName() string {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		host = "unknown"
+	if override := os.Getenv("PEERBUS_NAME"); override != "" {
+		return override
 	}
-	var r [3]byte
-	_, _ = rand.Read(r[:])
-	return fmt.Sprintf("cc-%s-%d-%s", host, os.Getpid(), hex.EncodeToString(r[:]))
+	return generateName()
+}
+
+// generateName produces a fresh "<adjective>-<noun>-<3 base36>" name.
+// Split out of UniqueName so the env-override path can be tested
+// independently of the random draw.
+func generateName() string {
+	adj := pickWord(nameAdjectives)
+	noun := pickWord(nameNouns)
+	return fmt.Sprintf("%s-%s-%s", adj, noun, randomSuffix())
+}
+
+// pickWord picks one entry uniformly at random from words. The list must
+// be non-empty (the curated wordlist.go guarantees this).
+func pickWord(words []string) string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	// 64-bit unbiased index: modulo a non-power-of-two introduces a
+	// negligible bias for our list sizes (~200), well below the noise
+	// floor of name collisions we already tolerate.
+	n := uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
+		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
+	return words[n%uint64(len(words))]
+}
+
+// randomSuffix returns a nameSuffixLen-char lowercase base36 string drawn
+// from crypto/rand.
+func randomSuffix() string {
+	var b [nameSuffixLen]byte
+	_, _ = rand.Read(b[:])
+	out := make([]byte, nameSuffixLen)
+	for i, v := range b {
+		out[i] = nameSuffixAlphabet[int(v)%len(nameSuffixAlphabet)]
+	}
+	return string(out)
 }

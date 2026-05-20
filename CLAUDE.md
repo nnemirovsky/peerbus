@@ -63,12 +63,12 @@ toolchain required.
 Broker:
 
 ```sh
-PEERBUS_LISTEN=0.0.0.0:8080 PEERBUS_TOKENS=t1,t2 PEERBUS_HMAC_SECRET=... \
+PEERBUS_LISTEN=0.0.0.0:47821 PEERBUS_TOKENS=t1,t2 PEERBUS_HMAC_SECRET=... \
   ./peerbus serve
 ./peerbus audit verify [--db PATH]   # walks the blake3 chain
 ```
 
-`serve` config loads from env: `PEERBUS_LISTEN` (default `127.0.0.1:8080`),
+`serve` config loads from env: `PEERBUS_LISTEN` (default `127.0.0.1:47821`),
 `PEERBUS_TOKENS` (comma-separated, ≥1 required), `PEERBUS_HMAC_SECRET`
 (≥ `hmac.MinSecretLen` = 32 bytes), `PEERBUS_DB` (default `peerbus.db`; the
 `--db` flag sets the base, env overrides). Missing tokens or a short secret
@@ -83,9 +83,9 @@ peerbus adapter --adapter=generic   # or --adapter=cc
 Env: `PEERBUS_URL`, `PEERBUS_NAME`, `PEERBUS_TOKEN`, `PEERBUS_HMAC_SECRET`.
 Fail-fast (exit 2): missing `PEERBUS_URL`, missing `PEERBUS_TOKEN`,
 `PEERBUS_HMAC_SECRET` shorter than `hmac.MinSecretLen` (32), or empty
-`PEERBUS_NAME` when `--adapter=generic` (cc auto-mints
-`cc-<host>-<pid>-<rand>` when name is empty). Missing/unknown `--adapter`
-is also exit 2.
+`PEERBUS_NAME` when `--adapter=generic` (cc auto-mints a friendly
+`<adjective>-<noun>-<3-char-base36>` name — see `internal/channel`).
+Missing/unknown `--adapter` is also exit 2.
 
 ## Load-bearing invariants — do NOT break
 

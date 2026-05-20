@@ -78,24 +78,31 @@ func (b *ccBus) Broadcast(ctx context.Context, body json.RawMessage) error {
 	return c.Broadcast(ctx, "bc-"+time.Now().Format("150405.000000000"), time.Now().UTC().Format(time.RFC3339Nano), "peer-bus", body)
 }
 
-func (b *ccBus) Peers(ctx context.Context) ([]string, error) {
+func (b *ccBus) Peers(ctx context.Context) (string, []string, error) {
+	self := b.rc.Name()
 	c := b.rc.Client()
 	if c == nil {
-		return nil, adapter.ErrNotConnected
+		return self, nil, adapter.ErrNotConnected
 	}
 	sink := make(chan []string, 1)
 	c.SetPeersSink(sink)
 	defer c.SetPeersSink(nil)
 	if err := c.RequestPeers(ctx); err != nil {
-		return nil, err
+		return self, nil, err
 	}
 	select {
 	case names := <-sink:
-		return names, nil
+		out := make([]string, 0, len(names))
+		for _, n := range names {
+			if n != self {
+				out = append(out, n)
+			}
+		}
+		return self, out, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return self, nil, ctx.Err()
 	case <-time.After(5 * time.Second):
-		return nil, context.DeadlineExceeded
+		return self, nil, context.DeadlineExceeded
 	}
 }
 
@@ -128,7 +135,10 @@ func newHarness(t *testing.T, f *brokerFixture, name string) *harness {
 	go func() {
 		defer close(loopDone)
 		_ = rc.Run(ctx, func(_ context.Context, env wire.Envelope) error {
-			srv.Deliver(channel.Inbound{ID: env.ID, From: env.From, Source: env.Source, Body: env.Body})
+			srv.Deliver(channel.Inbound{
+				ID: env.ID, From: env.From, Source: env.Source,
+				Kind: string(env.Kind), Body: env.Body,
+			})
 			return nil
 		})
 	}()
@@ -171,7 +181,7 @@ func newHarness(t *testing.T, f *brokerFixture, name string) *harness {
 	// wait for a live broker connection so injected messages are not lost.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := bus.Peers(ctx); err == nil {
+		if _, _, err := bus.Peers(ctx); err == nil {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -363,8 +373,11 @@ func TestNotificationMapping(t *testing.T) {
 	if pf.Method != "notifications/claude/channel" {
 		t.Fatalf("method = %q, want notifications/claude/channel", pf.Method)
 	}
-	if pf.Params.Content != "hello from tx" {
-		t.Fatalf("content = %q, want %q", pf.Params.Content, "hello from tx")
+	// Pretty content: 📨 banner + From/Type/Content lines. Body is a JSON
+	// string ("hello from tx"), so decodeBody unwraps it to that text.
+	want := "\U0001F4E8 peerbus message\nFrom: tx\nType: msg\nContent: hello from tx"
+	if pf.Params.Content != want {
+		t.Fatalf("content = %q, want %q", pf.Params.Content, want)
 	}
 	if pf.Params.Meta["from"] != "tx" {
 		t.Fatalf("meta.from = %q, want tx", pf.Params.Meta["from"])
@@ -374,6 +387,9 @@ func TestNotificationMapping(t *testing.T) {
 	}
 	if pf.Params.Meta["msg_id"] != "msg-1" {
 		t.Fatalf("meta.msg_id = %q, want msg-1", pf.Params.Meta["msg_id"])
+	}
+	if pf.Params.Meta["kind"] != "msg" {
+		t.Fatalf("meta.kind = %q, want msg", pf.Params.Meta["kind"])
 	}
 
 	// Re-send the SAME id: broker dedups by UNIQUE(id) so it never even
@@ -395,7 +411,8 @@ func TestNotificationMapping(t *testing.T) {
 	if err := json.Unmarshal(frame2, &pf2); err != nil {
 		t.Fatalf("push2 decode: %v (%s)", err, frame2)
 	}
-	if pf2.Params.Content != "second" || pf2.Params.Meta["msg_id"] != "msg-2" {
+	if !strings.Contains(pf2.Params.Content, "Content: second") ||
+		pf2.Params.Meta["msg_id"] != "msg-2" {
 		t.Fatalf("unexpected second push: %s", frame2)
 	}
 }
@@ -440,8 +457,8 @@ func TestForgedInboundSkipped(t *testing.T) {
 	if err := json.Unmarshal(frame, &pf); err != nil {
 		t.Fatalf("legit push decode: %v (%s)", err, frame)
 	}
-	if pf.Params.Content != "legit" {
-		t.Fatalf("content = %q, want legit", pf.Params.Content)
+	if !strings.Contains(pf.Params.Content, "Content: legit") {
+		t.Fatalf("content = %q, want pretty body 'Content: legit'", pf.Params.Content)
 	}
 }
 
@@ -457,16 +474,22 @@ func TestOutboundTools(t *testing.T) {
 
 	h := newHarness(t, f, "cc-sender")
 
-	// bus.peers lists the registry.
+	// bus.peers lists the registry as {self, peers}.
 	st, isErr, rpcErr := h.callTool("bus.peers", nil)
 	if rpcErr != nil || isErr {
 		t.Fatalf("bus.peers failed: rpcErr=%v isErr=%v", rpcErr, isErr)
+	}
+	if self, _ := st["self"].(string); self != "cc-sender" {
+		t.Fatalf("bus.peers self = %v, want cc-sender", st["self"])
 	}
 	peers, _ := st["peers"].([]any)
 	found := false
 	for _, p := range peers {
 		if p == "peer2" {
 			found = true
+		}
+		if p == "cc-sender" {
+			t.Fatalf("bus.peers must not include self; got %v", peers)
 		}
 	}
 	if !found {
@@ -521,7 +544,9 @@ func TestOutboundTools(t *testing.T) {
 	}
 }
 
-// TestUniqueName: auto-registration mints distinct, non-empty names.
+// TestUniqueName: auto-registration mints distinct, lowercase
+// <adjective>-<noun>-<3 base36> names. The exact corpus is intentionally
+// an implementation detail; only the shape is contractual.
 func TestUniqueName(t *testing.T) {
 	a := channel.UniqueName()
 	b := channel.UniqueName()
@@ -529,9 +554,110 @@ func TestUniqueName(t *testing.T) {
 		t.Fatalf("UniqueName returned empty (a=%q b=%q)", a, b)
 	}
 	if a == b {
-		t.Fatalf("UniqueName not unique: %q == %q", a, b)
+		t.Fatalf("UniqueName not unique across two calls: %q == %q", a, b)
 	}
-	if !strings.HasPrefix(a, "cc-") {
-		t.Fatalf("UniqueName missing cc- prefix: %q", a)
+	for _, n := range []string{a, b} {
+		parts := strings.Split(n, "-")
+		if len(parts) != 3 {
+			t.Fatalf("UniqueName %q: want three hyphen-separated parts, got %d", n, len(parts))
+		}
+		if got := len(parts[2]); got != 3 {
+			t.Fatalf("UniqueName %q: suffix len = %d, want 3", n, got)
+		}
+		for _, p := range parts {
+			if p == "" {
+				t.Fatalf("UniqueName %q: empty segment", n)
+			}
+			for _, r := range p {
+				if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+					t.Fatalf("UniqueName %q: non-[a-z0-9] char %q", n, r)
+				}
+			}
+		}
+	}
+}
+
+// TestUniqueName_EnvOverride: PEERBUS_NAME, when set, is honoured verbatim
+// (operator escape hatch — bypasses the friendly-name generator).
+func TestUniqueName_EnvOverride(t *testing.T) {
+	t.Setenv("PEERBUS_NAME", "fixed-operator-name")
+	if got := channel.UniqueName(); got != "fixed-operator-name" {
+		t.Fatalf("PEERBUS_NAME override: got %q, want fixed-operator-name", got)
+	}
+}
+
+// TestAnnounceSelf: the startup self-announcement is ONE
+// notifications/claude/channel push with the correct content + meta
+// (kind=system, self=<name>). The cc adapter fires this once per session
+// after a successful register so the consuming Claude session immediately
+// knows its identity.
+func TestAnnounceSelf(t *testing.T) {
+	f := newBrokerFixture(t)
+	h := newHarness(t, f, "cc-announce")
+	h.srv.AnnounceSelf("cc-announce")
+	frame := h.readFrame()
+	var pf pushFrame
+	if err := json.Unmarshal(frame, &pf); err != nil {
+		t.Fatalf("decode: %v (%s)", err, frame)
+	}
+	if pf.Method != "notifications/claude/channel" {
+		t.Fatalf("method = %q, want notifications/claude/channel", pf.Method)
+	}
+	want := "\U0001F4E1 peerbus: connected as cc-announce"
+	if pf.Params.Content != want {
+		t.Fatalf("content = %q, want %q", pf.Params.Content, want)
+	}
+	if pf.Params.Meta["kind"] != "system" {
+		t.Fatalf("meta.kind = %q, want system", pf.Params.Meta["kind"])
+	}
+	if pf.Params.Meta["self"] != "cc-announce" {
+		t.Fatalf("meta.self = %q, want cc-announce", pf.Params.Meta["self"])
+	}
+}
+
+// TestPrettyContentDecoding exercises the three decode branches of the
+// pretty-content body decoder via direct Server.Deliver calls (the broker
+// path is covered by the live-server tests above). Each branch maps the
+// opaque body JSON to the human-readable Content: line.
+func TestPrettyContentDecoding(t *testing.T) {
+	cases := []struct {
+		name string
+		kind string
+		body string
+		want string // expected trailing Content: <decoded>
+	}{
+		{"string-body", "msg", `"plain hello"`, "Content: plain hello"},
+		{"object-text-field", "msg", `{"text":"hi there"}`, "Content: hi there"},
+		{"object-message-field", "broadcast", `{"message":"all hands"}`, "Content: all hands"},
+		{"object-content-field", "msg", `{"content":"yet another"}`, "Content: yet another"},
+		{"object-fallback", "msg", `{"foo":"bar"}`, `Content: {"foo":"bar"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBrokerFixture(t)
+			h := newHarness(t, f, "cc-fmt-"+tc.name)
+			h.srv.Deliver(channel.Inbound{
+				ID: "id-" + tc.name, From: "tx", Source: "peer-bus",
+				Kind: tc.kind, Body: json.RawMessage(tc.body),
+			})
+			frame := h.readFrame()
+			var pf pushFrame
+			if err := json.Unmarshal(frame, &pf); err != nil {
+				t.Fatalf("decode: %v (%s)", err, frame)
+			}
+			if !strings.HasPrefix(pf.Params.Content, "\U0001F4E8 peerbus message\n") {
+				t.Fatalf("missing pretty banner: %q", pf.Params.Content)
+			}
+			wantType := "Type: " + tc.kind + "\n"
+			if !strings.Contains(pf.Params.Content, wantType) {
+				t.Fatalf("missing %q in %q", wantType, pf.Params.Content)
+			}
+			if !strings.HasSuffix(pf.Params.Content, tc.want) {
+				t.Fatalf("content = %q, want suffix %q", pf.Params.Content, tc.want)
+			}
+			if pf.Params.Meta["kind"] != tc.kind {
+				t.Fatalf("meta.kind = %q, want %q", pf.Params.Meta["kind"], tc.kind)
+			}
+		})
 	}
 }

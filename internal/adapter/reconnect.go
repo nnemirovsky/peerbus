@@ -91,8 +91,34 @@ func (rc *ResumingClient) Dedupe() *Dedupe { return rc.dedupe }
 // redial; callers should treat ErrNotConnected as transient.
 func (rc *ResumingClient) Client() *Client { return rc.cur.Load() }
 
+// Name returns the peer name this resuming client registers under. It is
+// stable across reconnects (same-name re-register is the resume mechanism)
+// and is the value the broker sees as the "from" of every outbound
+// envelope. Useful for self-identification (bus.peers' {self, peers}
+// shape) without an extra broker round-trip.
+func (rc *ResumingClient) Name() string { return rc.cfg.Name }
+
+// filterSelf returns names with self removed (used so bus.peers does not
+// list the caller in its own peer list). Allocates a new slice; the input
+// is left untouched.
+func filterSelf(names []string, self string) []string {
+	if self == "" {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != self {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // connect (re)establishes a live Client with bounded backoff, returning
-// once connected or when ctx is done.
+// once connected or when ctx is done. A name-claimed-under-different-token
+// rejection is surfaced verbatim (ErrNameClaimed) so the embedding mode can
+// rotate to a fresh name rather than spinning the redial loop forever
+// against a permanent rejection.
 func (rc *ResumingClient) connect(ctx context.Context) (*Client, error) {
 	backoff := baseBackoff
 	for {
@@ -103,6 +129,9 @@ func (rc *ResumingClient) connect(ctx context.Context) (*Client, error) {
 			// atomic Store (happens-before for any concurrent Client()).
 			rc.cur.Store(c)
 			return c, nil
+		}
+		if errors.Is(err, ErrNameClaimed) {
+			return nil, err
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()

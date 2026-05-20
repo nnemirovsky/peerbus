@@ -20,8 +20,11 @@ type Bus interface {
 	// Broadcast signs and fans a message out to every currently-registered
 	// peer except this one (no backfill).
 	Broadcast(ctx context.Context, body json.RawMessage) error
-	// Peers returns the broker's current peer registry.
-	Peers(ctx context.Context) ([]string, error)
+	// Peers returns this adapter's bound peer name (self) AND the
+	// broker's current peer registry sans self. bus.peers shapes the
+	// result as {self, peers} so the consuming agent immediately knows
+	// its own bus identity without a separate bus.whoami round-trip.
+	Peers(ctx context.Context) (self string, peers []string, err error)
 	// Drain returns every inbound message buffered since the last drain —
 	// already HMAC-verified and already filtered through the SHARED dedupe
 	// cache — and acks each one back to the broker. A repeat delivery of an
@@ -96,7 +99,7 @@ func toolsListResult(hideDrain bool) map[string]any {
 		},
 		{
 			"name":        "bus.peers",
-			"description": "List the peers currently registered on the bus.",
+			"description": "Return {self, peers}: this adapter's own bus name (self) and the names of other peers currently registered on the bus.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -185,14 +188,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolResult(map[string]any{"broadcast": true}), nil
 
 	case "bus.peers":
-		names, err := s.bus.Peers(ctx)
+		self, names, err := s.bus.Peers(ctx)
 		if err != nil {
 			return nil, err
 		}
 		if names == nil {
 			names = []string{}
 		}
-		return toolResult(map[string]any{"peers": names}), nil
+		return toolResult(map[string]any{"self": self, "peers": names}), nil
 
 	case "bus.drain":
 		msgs, err := s.bus.Drain(ctx)

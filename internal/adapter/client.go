@@ -59,6 +59,15 @@ var (
 	// Envelope.ID would ack the original signed id and never clear a
 	// broadcast row, redelivering it forever).
 	ErrMissingDeliveryKey = errors.New("adapter: broker deliver frame missing delivery_key")
+	// ErrNameClaimed signals that a register attempt was rejected because
+	// the chosen name is already bound under a DIFFERENT bearer token
+	// (broker's registry.ErrNameClaimed). The cc adapter uses this to
+	// trigger a name-rotation retry on startup (collision-safety backstop
+	// for the friendly-name generator — see channel.UniqueName). It is
+	// surfaced by detecting the broker's StatusPolicyViolation +
+	// "name claimed" close reason because the broker closes the WS rather
+	// than sending a structured rejection frame.
+	ErrNameClaimed = errors.New("adapter: peer name already claimed under a different token")
 )
 
 // Client is a single broker WebSocket connection for one peer. It performs
@@ -152,6 +161,17 @@ func (c *Client) Connect(ctx context.Context) error {
 	typ, data, err := ws.Read(ctx)
 	if err != nil {
 		_ = ws.CloseNow()
+		// Map the broker's "name claimed under a different token" close
+		// (StatusPolicyViolation + matching reason) onto the typed
+		// ErrNameClaimed so callers can react (the cc adapter rotates
+		// to a fresh friendly name). Other policy-violations (bad token,
+		// empty name, bad protocol_version) remain opaque — they are
+		// configuration errors, not collision-retry candidates.
+		var ce websocket.CloseError
+		if errors.As(err, &ce) && ce.Code == websocket.StatusPolicyViolation &&
+			ce.Reason == "name claimed under a different token" {
+			return fmt.Errorf("%w: %v", ErrNameClaimed, err)
+		}
 		return fmt.Errorf("adapter: register rejected or no ack: %w", err)
 	}
 	if typ != websocket.MessageText {

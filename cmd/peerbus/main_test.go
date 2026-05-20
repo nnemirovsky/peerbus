@@ -7,8 +7,7 @@ import (
 )
 
 // TestTopLevelVersion: `peerbus --version` prints the version and exits 0,
-// WITHOUT requiring a subcommand. Matches the v0.1.0 behaviour of both old
-// mains (both supported `--version` as a top-level flag).
+// WITHOUT requiring a subcommand.
 func TestTopLevelVersion(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := dispatch([]string{"--version"}, &out, &errb); code != 0 {
