@@ -15,8 +15,9 @@ import (
 // CC channel adapter (--adapter=cc).
 //
 // This mode IS the Claude Code claude/channel MCP server. Claude Code spawns
-// one peerbus-adapter per session over stdio (--dangerously-load-development-
-// channels server:peerbus-adapter). N sessions => N short-lived adapters,
+// one `peerbus adapter --adapter=cc` per session over stdio
+// (--dangerously-load-development-channels server:peerbus). N sessions => N
+// short-lived adapters,
 // each a distinct peer — exactly the cc2cc orphan bug designed out (the
 // adapter lifecycle is bound to its stdio session; the broker outlives all).
 //

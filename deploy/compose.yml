@@ -9,10 +9,11 @@
 #
 # Adapters are deliberately ABSENT from this manifest. An adapter's lifecycle
 # is owned by the agent runtime that spawns it:
-#   - --adapter=cc      : spawned per Claude Code session over stdio by Claude
-#                         Code itself (one short-lived adapter per session).
-#   - --adapter=generic : spawned per drain-agent (e.g. Hermes) as its own
-#                         stdio MCP child process.
+#   - peerbus adapter --adapter=cc      : spawned per Claude Code session over
+#                         stdio by Claude Code itself (one short-lived adapter
+#                         per session).
+#   - peerbus adapter --adapter=generic : spawned per drain-agent (e.g.
+#                         Hermes) as its own stdio MCP child process.
 # Putting an adapter here, or — worse — spawning the broker per session, is
 # exactly the cc2cc failure mode this design fixes: cc2cc conflated broker and
 # adapter into a per-session `server.mjs` that orphaned when the session ended
@@ -34,14 +35,18 @@
 
 services:
   peerbus-broker:
-    image: peerbus-broker:latest
+    image: peerbus:latest
     # Build from the repo root if you are not pulling a prebuilt image.
     # The canonical broker image is the repo-root Dockerfile (the same one
-    # the Docker release workflow publishes to ghcr.io). The broker binary
-    # is `peerbus-broker serve`.
+    # the Docker release workflow publishes to ghcr.io). The image ships the
+    # single `peerbus` multi-command binary with `serve` as the default
+    # command — the broker-only role is baked into the image's CMD, not into
+    # the binary.
     build:
       context: ..
       dockerfile: Dockerfile
+    # The image's default CMD is already ["serve"]; this line is explicit so
+    # operators reading the manifest see the role at a glance.
     command: ["serve"]
     restart: always
     # The broker binds PEERBUS_LISTEN (host:port). Publish that port so

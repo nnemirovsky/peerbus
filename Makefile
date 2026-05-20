@@ -1,4 +1,4 @@
-.PHONY: build run-broker run-adapter install test test-coverage lint fmt vet tidy \
+.PHONY: build run install test test-coverage lint fmt vet tidy \
         release release-snapshot deploy-validate clean help
 
 GO       ?= go
@@ -6,24 +6,21 @@ BINDIR   ?= bin
 DISTDIR  ?= dist
 ARGS     ?=
 
-# Build BOTH binaries into $(BINDIR): the long-lived broker and the thin
-# adapter (mode selected at runtime via --adapter).
+# Build the single peerbus multi-command binary into $(BINDIR). The
+# subcommand (serve / audit verify / adapter --adapter=<mode>) is selected
+# at runtime.
 build:
-	$(GO) build -o $(BINDIR)/peerbus-broker ./cmd/peerbus-broker
-	$(GO) build -o $(BINDIR)/peerbus-adapter ./cmd/peerbus-adapter
+	$(GO) build -o $(BINDIR)/peerbus ./cmd/peerbus
 
-# Two binaries => no single `run`. Run one explicitly; pass flags/subcommands
-# via ARGS, e.g. `make run-broker ARGS=serve` or
-# `make run-adapter ARGS=--adapter=generic`.
-run-broker:
-	$(GO) run ./cmd/peerbus-broker $(ARGS)
+# Pass flags/subcommands via ARGS, e.g. `make run ARGS='serve'` or
+# `make run ARGS='adapter --adapter=generic'` or
+# `make run ARGS='audit verify --db /tmp/peerbus.db'`.
+run:
+	$(GO) run ./cmd/peerbus $(ARGS)
 
-run-adapter:
-	$(GO) run ./cmd/peerbus-adapter $(ARGS)
-
-# Install both commands to GOPATH/bin.
+# Install the single command to GOPATH/bin.
 install:
-	$(GO) install ./cmd/...
+	$(GO) install ./cmd/peerbus
 
 test:
 	$(GO) test ./... -race -count=1
@@ -57,7 +54,7 @@ vet:
 tidy:
 	$(GO) mod tidy
 
-# Release (dry run): build all four targets locally, no publish.
+# Release (dry run): build all targets locally, no publish.
 release-snapshot:
 	goreleaser release --snapshot --clean
 
@@ -81,14 +78,13 @@ deploy-validate:
 	fi
 
 clean:
-	rm -rf $(BINDIR) $(DISTDIR) coverage.out coverage.html
+	rm -rf $(BINDIR)/peerbus $(DISTDIR) coverage.out coverage.html
 
 help:
 	@echo "Build & Run"
-	@echo "  make build                    Build both binaries into $(BINDIR)/"
-	@echo "  make run-broker ARGS='...'    Run the broker (e.g. ARGS=serve)"
-	@echo "  make run-adapter ARGS='...'   Run the adapter (e.g. ARGS=--adapter=generic)"
-	@echo "  make install                  Install both commands to GOPATH/bin"
+	@echo "  make build                    Build the single peerbus binary into $(BINDIR)/"
+	@echo "  make run ARGS='...'           Run peerbus (e.g. ARGS='serve' or ARGS='adapter --adapter=cc')"
+	@echo "  make install                  Install peerbus to GOPATH/bin"
 	@echo ""
 	@echo "Test & Lint"
 	@echo "  make test                     Run all tests (-race -count=1)"

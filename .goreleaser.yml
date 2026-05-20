@@ -1,26 +1,13 @@
 version: 2
 
 builds:
-  # peerbus has two binaries: the long-lived broker and the thin adapter.
-  # Both are pure-Go (modernc.org/sqlite) so CGO_ENABLED=0 cross-compiles
+  # peerbus ships as ONE multi-command binary (git/kubectl style): subcommands
+  # `serve`, `audit verify`, and `adapter --adapter=<mode>` select the role at
+  # runtime. Pure-Go (modernc.org/sqlite) so CGO_ENABLED=0 cross-compiles
   # every target from a single linux runner.
-  - id: peerbus-broker
-    main: ./cmd/peerbus-broker
-    binary: peerbus-broker
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-    goarch:
-      - amd64
-      - arm64
-    ldflags:
-      - -s -w -X github.com/nnemirovsky/peerbus/internal/version.Version={{ .Version }}
-
-  - id: peerbus-adapter
-    main: ./cmd/peerbus-adapter
-    binary: peerbus-adapter
+  - id: peerbus
+    main: ./cmd/peerbus
+    binary: peerbus
     env:
       - CGO_ENABLED=0
     goos:
@@ -33,11 +20,10 @@ builds:
       - -s -w -X github.com/nnemirovsky/peerbus/internal/version.Version={{ .Version }}
 
 archives:
-  # One archive per os/arch bundling BOTH binaries plus LICENSE + README.
+  # One archive per os/arch bundling the single binary plus LICENSE + README.
   - id: peerbus
     ids:
-      - peerbus-broker
-      - peerbus-adapter
+      - peerbus
     formats:
       - tar.gz
     name_template: "peerbus_{{ .Version }}_{{ .Os }}_{{ .Arch }}"

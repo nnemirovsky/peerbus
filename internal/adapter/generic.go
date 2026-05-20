@@ -19,7 +19,8 @@ import (
 // Generic adapter (--adapter=generic).
 //
 // This is the plain stdio MCP server mode: a host agent spawns one
-// peerbus-adapter per drain-agent, drives bus.send/bus.broadcast/bus.peers
+// `peerbus adapter --adapter=generic` per drain-agent, drives
+// bus.send/bus.broadcast/bus.peers
 // on demand, and calls bus.drain on its OWN schedule (there is no
 // push-wake; that is the cc adapter's job, deferred under the generic-only
 // plan variant).

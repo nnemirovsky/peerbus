@@ -13,9 +13,9 @@
 - A broker reachable from this machine, running as a managed long-lived
   service (NOT per-session). Note its `ws://host:port`, bearer token, and
   HMAC secret (provisioned out-of-band).
-- `peerbus-adapter` built (`make build`).
+- `peerbus` binary built (`make build`).
 - A second peer to send from — use the generic adapter
-  (`peerbus-adapter --adapter=generic`) wired into any agent, or a
+  (`peerbus adapter --adapter=generic`) wired into any agent, or a
   throwaway test client.
 - Claude Code v2.1.80+ (channels research preview;
   `--dangerously-load-development-channels` available).
@@ -28,8 +28,8 @@ In the project where the Claude session will run:
 {
   "mcpServers": {
     "peerbus": {
-      "command": "/abs/path/to/peerbus-adapter",
-      "args": ["--adapter=cc"],
+      "command": "/abs/path/to/peerbus",
+      "args": ["adapter", "--adapter=cc"],
       "env": {
         "PEERBUS_URL": "ws://BROKER_HOST:PORT",
         "PEERBUS_TOKEN": "THE_BEARER_TOKEN",
@@ -41,7 +41,7 @@ In the project where the Claude session will run:
 ```
 
 (Use the env/flag names the binary actually reads — confirm against
-`cmd/peerbus-adapter`.) Leave the peer name unset to exercise
+`cmd/peerbus`.) Leave the peer name unset to exercise
 auto-registration; the adapter mints `cc-<hostname>-<pid>-<rand>` (see
 `channel.UniqueName`).
 

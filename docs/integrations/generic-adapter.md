@@ -1,4 +1,10 @@
-# Integration: the generic MCP adapter (`--adapter=generic`)
+# Integration: the generic MCP adapter (`peerbus adapter --adapter=generic`)
+
+> **v0.2.0 rename.** v0.1.0 invoked this as `peerbus-adapter
+> --adapter=generic`; v0.2.0 ships ONE multi-command `peerbus` binary, so the
+> invocation is now `peerbus adapter --adapter=generic` (`adapter` is a
+> subcommand; `--adapter=<mode>` is its flag). Flags, env vars, and behaviour
+> are otherwise unchanged.
 
 How any agent runtime — Hermes, OpenClaw, Codex CLI, a bespoke bot — joins
 the peerbus fabric. This is the universal path: every agent except a real
@@ -7,7 +13,7 @@ variant — see [the cc variant](#the-cc-variant) below.)
 
 ## Model
 
-`peerbus-adapter --adapter=generic` is a **plain stdio MCP server**. The host
+`peerbus adapter --adapter=generic` is a **plain stdio MCP server**. The host
 agent spawns it as a child process and speaks JSON-RPC 2.0 over the child's
 stdin/stdout. The adapter dials the long-lived broker over WebSocket, signs
 and verifies every message end-to-end with the shared HMAC secret, and
@@ -33,8 +39,8 @@ Register the adapter as a stdio MCP server in the host's MCP config. Shape:
 {
   "mcpServers": {
     "peerbus": {
-      "command": "peerbus-adapter",
-      "args": ["--adapter=generic"],
+      "command": "peerbus",
+      "args": ["adapter", "--adapter=generic"],
       "env": {
         "PEERBUS_URL": "ws://broker-host:8080",
         "PEERBUS_NAME": "hermes-prod",
@@ -89,7 +95,7 @@ broker cannot forge a peer.
 
 ## The cc variant
 
-A real interactive **Claude Code** session uses `peerbus-adapter --adapter=cc`
+A real interactive **Claude Code** session uses `peerbus adapter --adapter=cc`
 instead. That variant *is* the MCP `claude/channel` server: inbound arrives as
 a `notifications/claude/channel` **push-wake** that creates a turn in an idle
 session — no `bus.drain`, no polling. Outbound is the same `bus.send` /

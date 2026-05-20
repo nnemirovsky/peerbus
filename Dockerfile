@@ -2,11 +2,18 @@
 #
 # BROKER ONLY. peerbus's topology is one long-lived broker + many thin,
 # ephemeral adapter processes. Adapters are spawned by each agent runtime
-# (Claude Code spawns --adapter=cc per session; a drain-agent spawns
-# --adapter=generic as its own stdio MCP child) and are NEVER containerized
-# here. Containerizing an adapter — or worse, running the broker per session —
-# is exactly the cc2cc orphaned-server failure mode the broker/adapter split
-# designs out. This image is the managed, long-lived broker service only.
+# (Claude Code spawns `peerbus adapter --adapter=cc` per session; a
+# drain-agent spawns `peerbus adapter --adapter=generic` as its own stdio MCP
+# child) and are NEVER containerized here. Containerizing an adapter — or
+# worse, running the broker per session — is exactly the cc2cc orphaned
+# -server failure mode the broker/adapter split designs out. This image is the
+# managed, long-lived broker service only.
+#
+# As of v0.2.0 peerbus ships ONE multi-command binary (git/kubectl style); the
+# image bakes in `peerbus serve` as the default entrypoint+command so the
+# container runs ONLY the `serve` subcommand by design. Only the build target
+# (`./cmd/peerbus` instead of `./cmd/peerbus-broker`) changed — the supervision
+# contract is identical.
 #
 # Pure Go: the durable store uses modernc.org/sqlite (no cgo), so the build
 # is CGO_ENABLED=0 and the final image is distroless/static (no libc, no
@@ -18,13 +25,13 @@ COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
 # CGO disabled: modernc.org/sqlite is pure Go. -s -w strips the binary.
-RUN CGO_ENABLED=0 go build -ldflags '-s -w' -o /out/peerbus-broker ./cmd/peerbus-broker
+RUN CGO_ENABLED=0 go build -ldflags '-s -w' -o /out/peerbus ./cmd/peerbus
 
 FROM gcr.io/distroless/static-debian12
 LABEL org.opencontainers.image.source="https://github.com/nnemirovsky/peerbus"
 LABEL org.opencontainers.image.description="peerbus broker — agent-agnostic durable message bus (broker only)"
 LABEL org.opencontainers.image.licenses="MIT"
-COPY --from=build /out/peerbus-broker /usr/local/bin/peerbus-broker
+COPY --from=build /out/peerbus /usr/local/bin/peerbus
 # Durable SQLite store (queue + blake3 audit chain) lives on a mounted
 # volume at /data. PEERBUS_DB should point here (see deploy/compose.yml).
 VOLUME ["/data"]
@@ -43,5 +50,5 @@ EXPOSE 8080
 # the broker's crash-on-misconfig (missing token / short HMAC secret exits
 # non-zero) is the supervision contract. Add an external WS probe if your
 # platform needs a liveness signal.
-ENTRYPOINT ["/usr/local/bin/peerbus-broker"]
+ENTRYPOINT ["/usr/local/bin/peerbus"]
 CMD ["serve"]

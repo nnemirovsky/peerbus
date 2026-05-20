@@ -22,8 +22,9 @@ here; read [`README.md`](README.md),
 
 ## Architecture map
 
-- `cmd/peerbus-broker` — broker CLI; subcommands `serve` and `audit verify`.
-- `cmd/peerbus-adapter` — adapter CLI; `--adapter=<mode>` dispatch, env-driven.
+- `cmd/peerbus` — single multi-command CLI (`peerbus serve`,
+  `peerbus audit verify`, `peerbus adapter --adapter=<mode>`). Top-level
+  `--version` works before subcommand parsing.
 - `internal/wire` — envelope + control frame types, codec, canonical HMAC
   form (load-bearing; see below).
 - `internal/hmac` — HMAC-SHA256 sign/verify over the canonical form;
@@ -46,7 +47,7 @@ here; read [`README.md`](README.md),
 ## Build / test / run
 
 ```sh
-make build            # builds dist/peerbus-broker and dist/peerbus-adapter
+make build            # builds bin/peerbus (single multi-command binary)
 make test             # go test ./...
 make lint             # golangci-lint if present, else gofmt -l + go vet
 make deploy-validate  # docker compose config -q (skips+succeeds if no docker)
@@ -63,8 +64,8 @@ Broker:
 
 ```sh
 PEERBUS_LISTEN=0.0.0.0:8080 PEERBUS_TOKENS=t1,t2 PEERBUS_HMAC_SECRET=... \
-  ./peerbus-broker serve
-./peerbus-broker [--db PATH] audit verify   # walks the blake3 chain
+  ./peerbus serve
+./peerbus audit verify [--db PATH]   # walks the blake3 chain
 ```
 
 `serve` config loads from env: `PEERBUS_LISTEN` (default `127.0.0.1:8080`),
@@ -76,7 +77,7 @@ is a fatal config error.
 Adapter:
 
 ```sh
-peerbus-adapter --adapter=generic   # or --adapter=cc
+peerbus adapter --adapter=generic   # or --adapter=cc
 ```
 
 Env: `PEERBUS_URL`, `PEERBUS_NAME`, `PEERBUS_TOKEN`, `PEERBUS_HMAC_SECRET`.

@@ -10,10 +10,10 @@
 #
 # Adapters are deliberately NOT supervised here. An adapter's lifecycle is
 # owned by the agent runtime that spawns it over stdio:
-#   - --adapter=cc      : one short-lived adapter per Claude Code session,
-#                         spawned by Claude Code itself.
-#   - --adapter=generic : spawned per drain-agent (e.g. Hermes) as its own
-#                         stdio MCP child.
+#   - peerbus adapter --adapter=cc      : one short-lived adapter per Claude
+#                         Code session, spawned by Claude Code itself.
+#   - peerbus adapter --adapter=generic : spawned per drain-agent (e.g.
+#                         Hermes) as its own stdio MCP child.
 # Supervising an adapter here, or spawning the broker per session, is exactly
 # the cc2cc failure mode this design fixes: cc2cc conflated broker and adapter
 # into a per-session `server.mjs` that orphaned when the session ended and
@@ -48,4 +48,4 @@ export PEERBUS_DB="${PEERBUS_DB:-/var/lib/peerbus/peerbus.db}"
 # broker refuses to start (non-zero exit) if a token is missing or the HMAC
 # secret is too short — s6 will keep restarting until it is fixed.
 
-exec peerbus-broker serve
+exec peerbus serve
