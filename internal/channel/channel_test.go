@@ -373,9 +373,10 @@ func TestNotificationMapping(t *testing.T) {
 	if pf.Method != "notifications/claude/channel" {
 		t.Fatalf("method = %q, want notifications/claude/channel", pf.Method)
 	}
-	// Pretty content: 📨 banner + From/Type/Content lines. Body is a JSON
-	// string ("hello from tx"), so decodeBody unwraps it to that text.
-	want := "\U0001F4E8 peerbus message\nFrom: tx\nType: msg\nContent: hello from tx"
+	// Single-line content: `📨 peerbus [<kind>] from <from>: "<body>"`. Body
+	// is a JSON string ("hello from tx"), so decodeBody unwraps it to that
+	// text.
+	want := "\U0001F4E8 peerbus [msg] from tx: \"hello from tx\""
 	if pf.Params.Content != want {
 		t.Fatalf("content = %q, want %q", pf.Params.Content, want)
 	}
@@ -411,7 +412,7 @@ func TestNotificationMapping(t *testing.T) {
 	if err := json.Unmarshal(frame2, &pf2); err != nil {
 		t.Fatalf("push2 decode: %v (%s)", err, frame2)
 	}
-	if !strings.Contains(pf2.Params.Content, "Content: second") ||
+	if !strings.Contains(pf2.Params.Content, `: "second"`) ||
 		pf2.Params.Meta["msg_id"] != "msg-2" {
 		t.Fatalf("unexpected second push: %s", frame2)
 	}
@@ -457,8 +458,8 @@ func TestForgedInboundSkipped(t *testing.T) {
 	if err := json.Unmarshal(frame, &pf); err != nil {
 		t.Fatalf("legit push decode: %v (%s)", err, frame)
 	}
-	if !strings.Contains(pf.Params.Content, "Content: legit") {
-		t.Fatalf("content = %q, want pretty body 'Content: legit'", pf.Params.Content)
+	if !strings.Contains(pf.Params.Content, `: "legit"`) {
+		t.Fatalf("content = %q, want body 'legit' in single-line format", pf.Params.Content)
 	}
 }
 
@@ -865,21 +866,22 @@ func TestAnnounceSelfReannouncesOnReconnect(t *testing.T) {
 }
 
 // TestPrettyContentDecoding exercises the three decode branches of the
-// pretty-content body decoder via direct Server.Deliver calls (the broker
-// path is covered by the live-server tests above). Each branch maps the
-// opaque body JSON to the human-readable Content: line.
+// single-line content body decoder via direct Server.Deliver calls (the
+// broker path is covered by the live-server tests above). Each branch maps
+// the opaque body JSON to the quoted body in the single-line content. Also
+// asserts the `[broadcast]` kind literal renders correctly.
 func TestPrettyContentDecoding(t *testing.T) {
 	cases := []struct {
 		name string
 		kind string
 		body string
-		want string // expected trailing Content: <decoded>
+		want string // expected full content line
 	}{
-		{"string-body", "msg", `"plain hello"`, "Content: plain hello"},
-		{"object-text-field", "msg", `{"text":"hi there"}`, "Content: hi there"},
-		{"object-message-field", "broadcast", `{"message":"all hands"}`, "Content: all hands"},
-		{"object-content-field", "msg", `{"content":"yet another"}`, "Content: yet another"},
-		{"object-fallback", "msg", `{"foo":"bar"}`, `Content: {"foo":"bar"}`},
+		{"string-body", "msg", `"plain hello"`, "\U0001F4E8 peerbus [msg] from tx: \"plain hello\""},
+		{"object-text-field", "msg", `{"text":"hi there"}`, "\U0001F4E8 peerbus [msg] from tx: \"hi there\""},
+		{"object-message-field-broadcast", "broadcast", `{"message":"all hands"}`, "\U0001F4E8 peerbus [broadcast] from tx: \"all hands\""},
+		{"object-content-field", "msg", `{"content":"yet another"}`, "\U0001F4E8 peerbus [msg] from tx: \"yet another\""},
+		{"object-fallback", "msg", `{"foo":"bar"}`, "\U0001F4E8 peerbus [msg] from tx: \"{\"foo\":\"bar\"}\""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -894,15 +896,8 @@ func TestPrettyContentDecoding(t *testing.T) {
 			if err := json.Unmarshal(frame, &pf); err != nil {
 				t.Fatalf("decode: %v (%s)", err, frame)
 			}
-			if !strings.HasPrefix(pf.Params.Content, "\U0001F4E8 peerbus message\n") {
-				t.Fatalf("missing pretty banner: %q", pf.Params.Content)
-			}
-			wantType := "Type: " + tc.kind + "\n"
-			if !strings.Contains(pf.Params.Content, wantType) {
-				t.Fatalf("missing %q in %q", wantType, pf.Params.Content)
-			}
-			if !strings.HasSuffix(pf.Params.Content, tc.want) {
-				t.Fatalf("content = %q, want suffix %q", pf.Params.Content, tc.want)
+			if pf.Params.Content != tc.want {
+				t.Fatalf("content = %q, want %q", pf.Params.Content, tc.want)
 			}
 			if pf.Params.Meta["kind"] != tc.kind {
 				t.Fatalf("meta.kind = %q, want %q", pf.Params.Meta["kind"], tc.kind)

@@ -836,13 +836,13 @@ func TestParity_CCPushWakeNotification(t *testing.T) {
 	if pf.Method != "notifications/claude/channel" {
 		t.Fatalf("method = %q, want notifications/claude/channel", pf.Method)
 	}
-	// Pretty content (see internal/channel.formatInbound): banner +
-	// From/Type/Content lines. The body is a JSON string so the Content
-	// line unwraps it to plain text. The exact prefix is the contract;
-	// only assert it (the From/Type/Content scaffolding is verified by
-	// internal/channel's unit tests in detail).
-	if !strings.HasPrefix(pf.Params.Content, "\U0001F4E8 peerbus message\n") {
-		t.Fatalf("content prefix = %q, want pretty banner", pf.Params.Content)
+	// Single-line content (see internal/channel.formatInbound):
+	// `📨 peerbus [<kind>] from <from>: "<body>"`. The body is a JSON
+	// string so decodeBody unwraps it to plain text. The exact prefix is
+	// the contract; only assert it (the kind/from/body decoding is
+	// verified by internal/channel's unit tests in detail).
+	if !strings.HasPrefix(pf.Params.Content, "\U0001F4E8 peerbus [msg] from tx: ") {
+		t.Fatalf("content prefix = %q, want single-line banner", pf.Params.Content)
 	}
 	if !strings.Contains(pf.Params.Content, "wake up, there is a decision to make") {
 		t.Fatalf("content missing decoded body: %q", pf.Params.Content)

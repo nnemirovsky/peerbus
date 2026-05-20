@@ -20,16 +20,17 @@
 // by the SHARED internal/adapter machinery — see internal/adapter/cc.go) is
 // mapped to a JSON-RPC notification `notifications/claude/channel` with
 //
-//	params = { content: <pretty multi-line summary>,
+//	params = { content: <single-line summary>,
 //	           meta:    { from, source, msg_id, kind } }
 //
 // emitted via mcp.Server.Notify (the additive server->client path). meta
 // keys are identifier-safe (letters/digits/underscore only) per
 // CHANNELS_SCHEMA.md §3 — keys with hyphens are silently dropped by Claude
-// Code, so we use from / source / msg_id / kind. The pretty content shape
-// (📨 banner + From/Type/Content lines) mirrors cc2cc's per-message render
-// so a session reading peerbus and cc2cc traffic side-by-side sees a
-// uniform layout; see formatInbound.
+// Code, so we use from / source / msg_id / kind. The content shape is a
+// single line `📨 peerbus [<kind>] from <from>: "<decoded body>"` — flat by
+// design because Claude Code's renderer collapses embedded newlines into
+// spaces and then truncates with an ellipsis, so a multi-line banner is
+// wasted vertical space. See formatInbound.
 //
 // On every successful broker (re)register the cc adapter emits ONE
 // system-kind notification (kind="system", content "📡 peerbus: connected
@@ -61,7 +62,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/nnemirovsky/peerbus/internal/mcp"
 )
@@ -154,7 +154,7 @@ func (s *Server) Serve(ctx context.Context) error { return s.mcp.Serve(ctx) }
 
 // Deliver maps one inbound broker delivery to a claude/channel push-wake
 // notification and emits it (DOCUMENTED — CHANNELS_SCHEMA.md §3). content is
-// a multi-line human-readable summary of the inbound message (see
+// a single-line human-readable summary of the inbound message (see
 // formatInbound); meta carries identifier-safe string attributes
 // (from / source / msg_id / kind) that Claude Code surfaces as <channel> XML
 // attributes.
@@ -201,28 +201,22 @@ func (s *Server) AnnounceSelf(self string) {
 // AnnounceSelf's caller contract.
 func (s *Server) Initialized() <-chan struct{} { return s.mcp.Initialized() }
 
-// formatInbound renders the pretty multi-line channel content from one
-// inbound delivery. The shape matches cc2cc's per-message banner so a
-// session reading peerbus traffic and cc2cc traffic side-by-side sees a
-// uniform layout. The "kind" line is "msg" for direct messages and
-// "broadcast" for fan-outs (defaults to "msg" if unset for safety — an
-// older sender that pre-dates the kind field still renders cleanly).
+// formatInbound renders the single-line channel content from one inbound
+// delivery. Shape: `📨 peerbus [<kind>] from <from>: "<decoded body>"`. The
+// format is flat by design — Claude Code's renderer collapses embedded
+// newlines into spaces and then truncates with an ellipsis, so a multi-line
+// banner is wasted vertical space (observed live in 2-session test). The
+// "kind" token is "msg" for direct messages and "broadcast" for fan-outs
+// (defaults to "msg" if unset for safety — an older sender that pre-dates
+// the kind field still renders cleanly). The decoded body is wrapped in
+// literal ASCII double-quotes; any `"` inside the body is left as-is
+// (readability over correctness for a banner string).
 func formatInbound(in Inbound) string {
 	kind := in.Kind
 	if kind == "" {
 		kind = "msg"
 	}
-	var b strings.Builder
-	b.WriteString("\U0001F4E8 peerbus message\n")
-	b.WriteString("From: ")
-	b.WriteString(in.From)
-	b.WriteString("\n")
-	b.WriteString("Type: ")
-	b.WriteString(kind)
-	b.WriteString("\n")
-	b.WriteString("Content: ")
-	b.WriteString(decodeBody(in.Body))
-	return b.String()
+	return fmt.Sprintf("\U0001F4E8 peerbus [%s] from %s: \"%s\"", kind, in.From, decodeBody(in.Body))
 }
 
 // decodeBody renders an opaque body for the pretty channel content. Rules,
