@@ -194,18 +194,31 @@ func (m *ccMode) Run(ctx context.Context) error {
 	srv := channel.NewServer(bus, os.Stdin, os.Stdout)
 	bus.srv = srv
 
+	// Self-announcement: emit ONE system-kind claude/channel push per
+	// successful (re)register, BUT only after the MCP client has signalled
+	// notifications/initialized. Claude Code silently drops
+	// claude/channel notifications received before the handshake completes
+	// (CHANNELS_SCHEMA.md §3) — that was the original bug where the
+	// connected-as banner never appeared in turn 1 and the consuming agent
+	// fell back to memsearch for a stale name. SetOnConnect runs its
+	// callback in a fresh goroutine, so the <-initialized wait does not
+	// stall the resume loop's Recv pump. Re-announcing on each reconnect
+	// (rather than only the first) keeps the banner reliable across
+	// mid-session broker drops — by the time a reconnect happens the
+	// session is already past initialized, so the wait is a no-op.
+	initialized := srv.Initialized()
+	rc.SetOnConnect(func() {
+		select {
+		case <-initialized:
+		case <-ctx.Done():
+			return
+		}
+		srv.AnnounceSelf(rc.Name())
+	})
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// Self-announcement: emit ONE system-kind claude/channel push
-		// carrying the bound name BEFORE the resume loop starts pumping
-		// real deliveries. This appears in turn 1 of the Claude session
-		// so the consuming agent immediately knows its identity on the
-		// bus — the design's self-identification guarantee. A later
-		// reconnect does NOT re-announce; the name is stable across
-		// reconnects (same-name re-register is the resume mechanism) so
-		// a re-announce would be redundant noise.
-		srv.AnnounceSelf(cfg.Name)
 		if err := rc.Run(ctx, bus.handle); err != nil && ctx.Err() == nil {
 			log.Error("cc: resume loop exited", "err", err)
 		}

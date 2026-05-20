@@ -31,10 +31,14 @@
 // so a session reading peerbus and cc2cc traffic side-by-side sees a
 // uniform layout; see formatInbound.
 //
-// On a successful broker register the cc adapter also emits ONE system-kind
-// notification (kind="system", content "📡 peerbus: connected as <name>")
-// so the consuming agent immediately knows its own bus name without an
-// explicit bus.whoami round-trip — see AnnounceSelf.
+// On every successful broker (re)register the cc adapter emits ONE
+// system-kind notification (kind="system", content "📡 peerbus: connected
+// as <name>") so the consuming agent immediately knows its own bus name
+// without an explicit bus.whoami round-trip — see AnnounceSelf. The push is
+// gated on the MCP client having sent notifications/initialized: Claude
+// Code silently drops claude/channel notifications received before the
+// handshake completes (CHANNELS_SCHEMA.md §3), so a pre-handshake announce
+// would never reach turn 1 of the session.
 //
 // Outbound (reply path): standard MCP tools/list + tools/call exposing
 // bus.send / bus.broadcast / bus.peers — the SAME tool surface and
@@ -171,11 +175,16 @@ func (s *Server) Deliver(in Inbound) {
 }
 
 // AnnounceSelf emits a single system-kind claude/channel notification
-// telling the session what peer name this adapter bound under. It is fired
-// ONCE per successful register (the cc adapter's resume loop calls it after
-// each successful register — the design's "self-identification on startup"
-// guarantee). meta.kind is "system" so the consuming agent can ignore it
-// from human-style escalation logic.
+// telling the session what peer name this adapter bound under. meta.kind is
+// "system" so the consuming agent can ignore it from human-style escalation
+// logic.
+//
+// CALLER CONTRACT: this is the unconditional push primitive. The cc adapter
+// MUST gate the call on Initialized() — Claude Code silently drops
+// server-initiated notifications received before the client signals
+// notifications/initialized (CHANNELS_SCHEMA.md §3), so a pre-handshake
+// announce never reaches turn 1 of the session. See
+// internal/adapter/cc.go's Run for the wiring.
 func (s *Server) AnnounceSelf(self string) {
 	s.mcp.Notify(PushMethod, PushParams{
 		Content: fmt.Sprintf("\U0001F4E1 peerbus: connected as %s", self),
@@ -185,6 +194,12 @@ func (s *Server) AnnounceSelf(self string) {
 		},
 	})
 }
+
+// Initialized returns a channel that is closed once the MCP client has sent
+// notifications/initialized (the handshake completion signal). The cc
+// adapter's startup self-announce waits on this before pushing — see
+// AnnounceSelf's caller contract.
+func (s *Server) Initialized() <-chan struct{} { return s.mcp.Initialized() }
 
 // formatInbound renders the pretty multi-line channel content from one
 // inbound delivery. The shape matches cc2cc's per-message banner so a

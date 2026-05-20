@@ -105,6 +105,17 @@ type Server struct {
 	inCloser io.Closer
 
 	initialized bool
+	// initializedCh is closed exactly once on the first
+	// notifications/initialized client message. Exposed via Initialized()
+	// so the cc adapter's self-announce can wait for the MCP handshake to
+	// complete before pushing a server-initiated notification — Claude Code
+	// silently drops claude/channel notifications received before the
+	// client has signalled initialized (CHANNELS_SCHEMA.md §3). Lazily
+	// allocated by Initialized() so the generic adapter (which never asks)
+	// pays nothing.
+	initializedCh   chan struct{}
+	initializedOnce sync.Once
+	initializedMu   sync.Mutex
 
 	// serverName is the serverInfo.name advertised at initialize. Defaults
 	// to the generic adapter name; the cc adapter overrides it.
@@ -193,6 +204,45 @@ func (s *Server) Notify(method string, params any) {
 	_, _ = s.out.Write(b)
 	_ = s.out.WriteByte('\n')
 	_ = s.out.Flush()
+}
+
+// Initialized returns a channel that is closed once the client has sent the
+// MCP notifications/initialized message (the standard MCP handshake
+// completion signal). The channel is lazily allocated and idempotent: every
+// caller observes the same channel and a second initialized notification is
+// a no-op. The cc adapter waits on this before emitting its
+// claude/channel self-announce notification — Claude Code silently drops
+// server-initiated notifications that arrive before the client has signalled
+// initialized (CHANNELS_SCHEMA.md §3). The generic adapter never asks and
+// is unaffected.
+func (s *Server) Initialized() <-chan struct{} {
+	s.initializedMu.Lock()
+	if s.initializedCh == nil {
+		s.initializedCh = make(chan struct{})
+		// A late Initialized() call after the client already signalled
+		// initialized must observe an already-closed channel, otherwise the
+		// caller would block forever on a signal that has already fired.
+		if s.initialized {
+			close(s.initializedCh)
+		}
+	}
+	ch := s.initializedCh
+	s.initializedMu.Unlock()
+	return ch
+}
+
+// signalInitialized closes the initialized channel exactly once. Safe to
+// call before or after Initialized(): if the channel hasn't been allocated
+// yet, the next Initialized() call will see s.initialized=true and allocate
+// an already-closed channel.
+func (s *Server) signalInitialized() {
+	s.initializedOnce.Do(func() {
+		s.initializedMu.Lock()
+		defer s.initializedMu.Unlock()
+		if s.initializedCh != nil {
+			close(s.initializedCh)
+		}
+	})
 }
 
 // Serve runs the read/dispatch loop until ctx is cancelled, stdin reaches
@@ -342,6 +392,7 @@ func (s *Server) dispatch(ctx context.Context, raw []byte) {
 		s.handleInitialize(req)
 	case "notifications/initialized", "initialized":
 		s.initialized = true // notification — no response
+		s.signalInitialized()
 	case "ping":
 		if !isNotification {
 			s.writeResult(req.ID, struct{}{})

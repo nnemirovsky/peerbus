@@ -615,6 +615,255 @@ func TestAnnounceSelf(t *testing.T) {
 	}
 }
 
+// ── self-announce gating: mirrors internal/adapter/cc.go wiring ──
+//
+// gatedHarness spins up the same triple as ccMode.Run — a real channel.Server
+// over pipes, a real ResumingClient against a real in-process broker, the
+// resume loop wired to forward inbound deliveries as channel pushes, AND the
+// SetOnConnect(<-srv.Initialized()) -> AnnounceSelf gate that is the subject
+// of these tests. The host side does NOT auto-send notifications/initialized
+// (unlike newHarness); each test drives the handshake explicitly so it can
+// observe what does and does not arrive before initialized.
+type gatedHarness struct {
+	t        *testing.T
+	in       *io.PipeWriter
+	out      *bufio.Reader
+	frames   chan json.RawMessage
+	srv      *channel.Server
+	rc       *adapter.ResumingClient
+	stop     func()
+	cancel   context.CancelFunc
+	loopDone <-chan struct{}
+	nextID   int
+}
+
+func newGatedHarness(t *testing.T, f *brokerFixture, name string) *gatedHarness {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	rc := adapter.NewResumingClient(f.cfg(name), 64)
+	bus := &ccBus{rc: rc}
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	srv := channel.NewServer(bus, inR, outW)
+
+	// EXACTLY the gate cc.go installs: announce on every successful
+	// (re)register, but only after MCP notifications/initialized.
+	initialized := srv.Initialized()
+	rc.SetOnConnect(func() {
+		select {
+		case <-initialized:
+		case <-ctx.Done():
+			return
+		}
+		srv.AnnounceSelf(rc.Name())
+	})
+
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		_ = rc.Run(ctx, func(_ context.Context, env wire.Envelope) error {
+			srv.Deliver(channel.Inbound{
+				ID: env.ID, From: env.From, Source: env.Source,
+				Kind: string(env.Kind), Body: env.Body,
+			})
+			return nil
+		})
+	}()
+
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = srv.Serve(ctx)
+	}()
+
+	h := &gatedHarness{
+		t: t, in: inW, out: bufio.NewReader(outR),
+		frames: make(chan json.RawMessage, 16),
+		srv:    srv, rc: rc, cancel: cancel, loopDone: loopDone,
+	}
+
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		for {
+			line, err := h.out.ReadBytes('\n')
+			if len(line) > 0 {
+				h.frames <- json.RawMessage(strings.TrimRight(string(line), "\r\n"))
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	h.stop = func() {
+		_ = inW.Close()
+		cancel()
+		<-serveDone
+		<-loopDone
+		_ = outW.Close()
+		<-readerDone
+	}
+	t.Cleanup(h.stop)
+	return h
+}
+
+func (h *gatedHarness) sendReq(method string, params any) json.RawMessage {
+	h.t.Helper()
+	h.nextID++
+	req := map[string]any{"jsonrpc": "2.0", "id": h.nextID, "method": method}
+	if params != nil {
+		req["params"] = params
+	}
+	b, _ := json.Marshal(req)
+	if _, err := h.in.Write(append(b, '\n')); err != nil {
+		h.t.Fatalf("write %s: %v", method, err)
+	}
+	return h.readFrame()
+}
+
+func (h *gatedHarness) notify(method string) {
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
+	if _, err := h.in.Write(append(b, '\n')); err != nil {
+		h.t.Fatalf("notify %s: %v", method, err)
+	}
+}
+
+func (h *gatedHarness) readFrame() json.RawMessage {
+	h.t.Helper()
+	select {
+	case f := <-h.frames:
+		return f
+	case <-time.After(5 * time.Second):
+		h.t.Fatalf("timed out waiting for a JSON-RPC frame")
+		return nil
+	}
+}
+
+func (h *gatedHarness) readFrameNoFail(d time.Duration) (json.RawMessage, bool) {
+	select {
+	case f := <-h.frames:
+		return f, true
+	case <-time.After(d):
+		return nil, false
+	}
+}
+
+// waitForRegister waits until the resuming client has a live broker
+// connection (so the OnConnect callback is guaranteed to have fired at least
+// once). Mirrors newHarness's bus.Peers ping but works without the MCP
+// handshake having completed (peers is an outbound broker RPC, not an MCP
+// tool call here).
+func (h *gatedHarness) waitForRegister() {
+	h.t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if h.rc.Client() != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	h.t.Fatalf("resuming client never registered")
+}
+
+// TestAnnounceSelfGatedOnInitialized: AnnounceSelf MUST NOT fire before the
+// MCP client has sent notifications/initialized. Even after a successful
+// broker register (OnConnect has fired), no claude/channel push reaches
+// stdout until the handshake completes — Claude Code silently drops
+// server-initiated notifications received before initialized
+// (CHANNELS_SCHEMA.md §3) and we'd be writing them into the void.
+func TestAnnounceSelfGatedOnInitialized(t *testing.T) {
+	f := newBrokerFixture(t)
+	h := newGatedHarness(t, f, "cc-gated")
+	h.waitForRegister()
+
+	// Broker register is complete; OnConnect has been invoked. NO MCP
+	// handshake has happened yet. Assert nothing arrives.
+	if frame, ok := h.readFrameNoFail(400 * time.Millisecond); ok {
+		t.Fatalf("announce leaked before notifications/initialized: %s", frame)
+	}
+
+	// Now drive the handshake; the announce should land promptly.
+	resp := h.sendReq("initialize", map[string]any{"protocolVersion": "2025-06-18"})
+	if !strings.Contains(string(resp), `"protocolVersion"`) {
+		t.Fatalf("initialize response unexpected: %s", resp)
+	}
+	h.notify("notifications/initialized")
+
+	frame := h.readFrame()
+	var pf pushFrame
+	if err := json.Unmarshal(frame, &pf); err != nil {
+		t.Fatalf("announce decode: %v (%s)", err, frame)
+	}
+	if pf.Method != "notifications/claude/channel" {
+		t.Fatalf("method = %q, want notifications/claude/channel", pf.Method)
+	}
+	if pf.Params.Meta["kind"] != "system" || pf.Params.Meta["self"] != "cc-gated" {
+		t.Fatalf("meta = %v, want kind=system self=cc-gated", pf.Params.Meta)
+	}
+	if want := "\U0001F4E1 peerbus: connected as cc-gated"; pf.Params.Content != want {
+		t.Fatalf("content = %q, want %q", pf.Params.Content, want)
+	}
+
+	// Exactly ONE announce per register. No spurious second push.
+	if frame, ok := h.readFrameNoFail(300 * time.Millisecond); ok {
+		t.Fatalf("second announce after single register: %s", frame)
+	}
+}
+
+// TestAnnounceSelfReannouncesOnReconnect: a broker drop + redial under the
+// same name triggers a SECOND announce. The first connect's announce already
+// fired (the session is past initialized), the resume loop reconnects on
+// drop and OnConnect runs again — the wait on initialized is a no-op the
+// second time so the banner lands immediately. Keeps the connected-as line
+// reliable across mid-session broker flaps.
+func TestAnnounceSelfReannouncesOnReconnect(t *testing.T) {
+	f := newBrokerFixture(t)
+	h := newGatedHarness(t, f, "cc-reconnect")
+	h.waitForRegister()
+
+	// Complete the handshake; consume the first announce.
+	_ = h.sendReq("initialize", map[string]any{"protocolVersion": "2025-06-18"})
+	h.notify("notifications/initialized")
+	first := h.readFrame()
+	var pf1 pushFrame
+	if err := json.Unmarshal(first, &pf1); err != nil {
+		t.Fatalf("first announce decode: %v (%s)", err, first)
+	}
+	if pf1.Params.Meta["self"] != "cc-reconnect" {
+		t.Fatalf("first announce self = %q, want cc-reconnect", pf1.Params.Meta["self"])
+	}
+
+	// Force a transport drop by closing the current Client. The resume
+	// loop redials under the same name and OnConnect fires again.
+	if c := h.rc.Client(); c != nil {
+		c.Close()
+	}
+
+	// A second announce MUST arrive after the redial succeeds.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		frame, ok := h.readFrameNoFail(200 * time.Millisecond)
+		if !ok {
+			continue
+		}
+		var pf2 pushFrame
+		if err := json.Unmarshal(frame, &pf2); err != nil {
+			t.Fatalf("decode reconnect frame: %v (%s)", err, frame)
+		}
+		// Skip any pre-existing buffered frames (none expected here).
+		if pf2.Method == "notifications/claude/channel" &&
+			pf2.Params.Meta["kind"] == "system" &&
+			pf2.Params.Meta["self"] == "cc-reconnect" {
+			return
+		}
+		t.Fatalf("unexpected frame after reconnect: %s", frame)
+	}
+	t.Fatalf("no re-announce within 3s of reconnect")
+}
+
 // TestPrettyContentDecoding exercises the three decode branches of the
 // pretty-content body decoder via direct Server.Deliver calls (the broker
 // path is covered by the live-server tests above). Each branch maps the
