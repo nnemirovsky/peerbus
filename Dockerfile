@@ -1,23 +1,24 @@
-# Multi-stage build for the peerbus broker.
+# Multi-stage build for the peerbus binary.
 #
-# BROKER ONLY. peerbus's topology is one long-lived broker + many thin,
-# ephemeral adapter processes. Adapters are spawned by each agent runtime
-# (Claude Code spawns `peerbus adapter --adapter=cc` per session; a
-# drain-agent spawns `peerbus adapter --adapter=generic` as its own stdio MCP
-# child) and are NEVER containerized here. Containerizing an adapter — or
-# worse, running the broker per session — is exactly the cc2cc orphaned
-# -server failure mode the broker/adapter split designs out. This image is the
-# managed, long-lived broker service only.
+# The image bakes in the full `peerbus` multi-command binary (v0.2.0+); the
+# ENTRYPOINT is `peerbus` and CMD defaults to `["serve"]`, so by default the
+# container is the long-lived broker service. CMD is overridable for ops
+# tasks:
+#   docker run --rm peerbus:latest --version
+#   docker run --rm -v peerbus-data:/data peerbus:latest audit verify \
+#                                                            --db /data/peerbus.db
 #
-# As of v0.2.0 peerbus ships ONE multi-command binary (git/kubectl style); the
-# image bakes in `peerbus serve` as the default entrypoint+command so the
-# container runs ONLY the `serve` subcommand by design. Only the build target
-# (`./cmd/peerbus` instead of `./cmd/peerbus-broker`) changed — the supervision
-# contract is identical.
+# Adapter mode (`adapter --adapter=cc|generic`) is technically runnable too,
+# but adapters are stdio MCP children of the agent runtime (Claude Code spawns
+# the cc adapter per session; a drain-agent spawns the generic adapter). Running
+# an adapter as a long-lived container service has no agent stdio to attach to
+# and ends up either orphaned or replicated per session — the cc2cc failure
+# mode the broker/adapter split designs out. Use the release binary, not the
+# container, for adapters.
 #
-# Pure Go: the durable store uses modernc.org/sqlite (no cgo), so the build
-# is CGO_ENABLED=0 and the final image is distroless/static (no libc, no
-# shell). One static binary, nothing else.
+# Pure Go: the durable store uses modernc.org/sqlite (no cgo), so the build is
+# CGO_ENABLED=0 and the final image is distroless/static (no libc, no shell).
+# One static binary, nothing else.
 
 FROM golang:1.25 AS build
 WORKDIR /src
@@ -29,7 +30,7 @@ RUN CGO_ENABLED=0 go build -ldflags '-s -w' -o /out/peerbus ./cmd/peerbus
 
 FROM gcr.io/distroless/static-debian12
 LABEL org.opencontainers.image.source="https://github.com/nnemirovsky/peerbus"
-LABEL org.opencontainers.image.description="peerbus broker — agent-agnostic durable message bus (broker only)"
+LABEL org.opencontainers.image.description="peerbus — agent-agnostic durable message bus (broker by default; CMD overridable for audit/version)"
 LABEL org.opencontainers.image.licenses="MIT"
 COPY --from=build /out/peerbus /usr/local/bin/peerbus
 # Durable SQLite store (queue + blake3 audit chain) lives on a mounted

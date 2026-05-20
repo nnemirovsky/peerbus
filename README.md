@@ -100,7 +100,7 @@ PEERBUS_TOKENS=... PEERBUS_HMAC_SECRET=... ./peerbus serve
 ./peerbus audit verify   # walk the blake3 audit chain
 ```
 
-`deploy/peerbus-broker.run` (s6) is an alternative to compose. The container image is the repo-root `Dockerfile` (broker only, pure-Go static, distroless). Do **not** run the broker per session.
+`deploy/peerbus-broker.run` (s6) is an alternative to compose. The container image is the repo-root `Dockerfile` (pure-Go static, distroless); it bakes in the full `peerbus` binary with `serve` as the default CMD, so `docker run peerbus:latest` is the broker. CMD is overridable (e.g. `docker run --rm -v peerbus-data:/data peerbus:latest audit verify --db /data/peerbus.db`) but adapters are stdio children of the agent runtime — don't run them as a container service. Do **not** run the broker per session either.
 
 ### 2. Wire an adapter
 
