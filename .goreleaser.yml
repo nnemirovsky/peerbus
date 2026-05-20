@@ -20,16 +20,17 @@ builds:
       - -s -w -X github.com/nnemirovsky/peerbus/internal/version.Version={{ .Version }}
 
 archives:
-  # One archive per os/arch bundling the single binary plus LICENSE + README.
+  # Single static binary — no archive wrapping. Users grab the raw binary,
+  # chmod +x, and run it. Matches the sluice release style; no LICENSE/README
+  # bundling because the binary is the artifact and both files are already in
+  # the repo / release notes. name_template intentionally omits the version
+  # (sluice convention) so `latest/download/peerbus_<os>_<arch>` always works.
   - id: peerbus
     ids:
       - peerbus
     formats:
-      - tar.gz
-    name_template: "peerbus_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    files:
-      - LICENSE
-      - README.md
+      - binary
+    name_template: "peerbus_{{ .Os }}_{{ .Arch }}"
 
 changelog:
   disable: true

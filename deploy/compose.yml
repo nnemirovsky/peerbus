@@ -1,6 +1,6 @@
-# peerbus broker — managed, long-lived service (broker ONLY)
+# peerbus broker — managed, long-lived service (default `serve` role)
 #
-# WHY THIS COMPOSE FILE RUNS ONLY THE BROKER, NEVER AN ADAPTER:
+# WHY THIS COMPOSE FILE RUNS THE BROKER, NEVER AN ADAPTER:
 #
 # peerbus's topology is one long-lived broker + many thin, ephemeral adapter
 # processes. The broker holds the durable SQLite queue and the blake3
@@ -40,8 +40,9 @@ services:
     # The canonical broker image is the repo-root Dockerfile (the same one
     # the Docker release workflow publishes to ghcr.io). The image ships the
     # single `peerbus` multi-command binary with `serve` as the default
-    # command — the broker-only role is baked into the image's CMD, not into
-    # the binary.
+    # command — the binary itself is multi-role (subcommands `serve`,
+    # `audit verify`, `adapter --adapter=<mode>`), but this manifest pins it
+    # to `serve` because adapters belong to agent runtimes, not containers.
     build:
       context: ..
       dockerfile: Dockerfile
