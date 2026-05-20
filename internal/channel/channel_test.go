@@ -373,10 +373,9 @@ func TestNotificationMapping(t *testing.T) {
 	if pf.Method != "notifications/claude/channel" {
 		t.Fatalf("method = %q, want notifications/claude/channel", pf.Method)
 	}
-	// Single-line content: `📨 peerbus [<kind>] from <from>: "<body>"`. Body
-	// is a JSON string ("hello from tx"), so decodeBody unwraps it to that
-	// text.
-	want := "\U0001F4E8 peerbus [msg] from tx: \"hello from tx\""
+	// Single-line content: `📨 <kind> from <from>: "<body>"`. Body is a JSON
+	// string ("hello from tx"), so decodeBody unwraps it to that text.
+	want := "\U0001F4E8 msg from tx: \"hello from tx\""
 	if pf.Params.Content != want {
 		t.Fatalf("content = %q, want %q", pf.Params.Content, want)
 	}
@@ -604,7 +603,7 @@ func TestAnnounceSelf(t *testing.T) {
 	if pf.Method != "notifications/claude/channel" {
 		t.Fatalf("method = %q, want notifications/claude/channel", pf.Method)
 	}
-	want := "\U0001F4E1 peerbus: connected as cc-announce"
+	want := "\U0001F4E1 connected as cc-announce"
 	if pf.Params.Content != want {
 		t.Fatalf("content = %q, want %q", pf.Params.Content, want)
 	}
@@ -804,7 +803,7 @@ func TestAnnounceSelfGatedOnInitialized(t *testing.T) {
 	if pf.Params.Meta["kind"] != "system" || pf.Params.Meta["self"] != "cc-gated" {
 		t.Fatalf("meta = %v, want kind=system self=cc-gated", pf.Params.Meta)
 	}
-	if want := "\U0001F4E1 peerbus: connected as cc-gated"; pf.Params.Content != want {
+	if want := "\U0001F4E1 connected as cc-gated"; pf.Params.Content != want {
 		t.Fatalf("content = %q, want %q", pf.Params.Content, want)
 	}
 
@@ -869,7 +868,7 @@ func TestAnnounceSelfReannouncesOnReconnect(t *testing.T) {
 // single-line content body decoder via direct Server.Deliver calls (the
 // broker path is covered by the live-server tests above). Each branch maps
 // the opaque body JSON to the quoted body in the single-line content. Also
-// asserts the `[broadcast]` kind literal renders correctly.
+// asserts the `broadcast` kind token renders correctly.
 func TestPrettyContentDecoding(t *testing.T) {
 	cases := []struct {
 		name string
@@ -877,11 +876,11 @@ func TestPrettyContentDecoding(t *testing.T) {
 		body string
 		want string // expected full content line
 	}{
-		{"string-body", "msg", `"plain hello"`, "\U0001F4E8 peerbus [msg] from tx: \"plain hello\""},
-		{"object-text-field", "msg", `{"text":"hi there"}`, "\U0001F4E8 peerbus [msg] from tx: \"hi there\""},
-		{"object-message-field-broadcast", "broadcast", `{"message":"all hands"}`, "\U0001F4E8 peerbus [broadcast] from tx: \"all hands\""},
-		{"object-content-field", "msg", `{"content":"yet another"}`, "\U0001F4E8 peerbus [msg] from tx: \"yet another\""},
-		{"object-fallback", "msg", `{"foo":"bar"}`, "\U0001F4E8 peerbus [msg] from tx: \"{\"foo\":\"bar\"}\""},
+		{"string-body", "msg", `"plain hello"`, "\U0001F4E8 msg from tx: \"plain hello\""},
+		{"object-text-field", "msg", `{"text":"hi there"}`, "\U0001F4E8 msg from tx: \"hi there\""},
+		{"object-message-field-broadcast", "broadcast", `{"message":"all hands"}`, "\U0001F4E8 broadcast from tx: \"all hands\""},
+		{"object-content-field", "msg", `{"content":"yet another"}`, "\U0001F4E8 msg from tx: \"yet another\""},
+		{"object-fallback", "msg", `{"foo":"bar"}`, "\U0001F4E8 msg from tx: \"{\"foo\":\"bar\"}\""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

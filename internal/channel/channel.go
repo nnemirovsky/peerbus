@@ -27,14 +27,17 @@
 // keys are identifier-safe (letters/digits/underscore only) per
 // CHANNELS_SCHEMA.md §3 — keys with hyphens are silently dropped by Claude
 // Code, so we use from / source / msg_id / kind. The content shape is a
-// single line `📨 peerbus [<kind>] from <from>: "<decoded body>"` — flat by
-// design because Claude Code's renderer collapses embedded newlines into
-// spaces and then truncates with an ellipsis, so a multi-line banner is
-// wasted vertical space. See formatInbound.
+// single line `📨 <kind> from <from>: "<decoded body>"` — flat by design
+// because Claude Code's renderer collapses embedded newlines into spaces
+// and then truncates with an ellipsis, so a multi-line banner is wasted
+// vertical space. Claude Code's UI prefixes the notification with the MCP
+// server name (rendered as `peerbus: <content>`), so the word "peerbus"
+// inside the content would be duplicated noise — it is omitted. See
+// formatInbound.
 //
 // On every successful broker (re)register the cc adapter emits ONE
-// system-kind notification (kind="system", content "📡 peerbus: connected
-// as <name>") so the consuming agent immediately knows its own bus name
+// system-kind notification (kind="system", content "📡 connected as
+// <name>") so the consuming agent immediately knows its own bus name
 // without an explicit bus.whoami round-trip — see AnnounceSelf. The push is
 // gated on the MCP client having sent notifications/initialized: Claude
 // Code silently drops claude/channel notifications received before the
@@ -187,7 +190,7 @@ func (s *Server) Deliver(in Inbound) {
 // internal/adapter/cc.go's Run for the wiring.
 func (s *Server) AnnounceSelf(self string) {
 	s.mcp.Notify(PushMethod, PushParams{
-		Content: fmt.Sprintf("\U0001F4E1 peerbus: connected as %s", self),
+		Content: fmt.Sprintf("\U0001F4E1 connected as %s", self),
 		Meta: map[string]string{
 			"kind": "system",
 			"self": self,
@@ -202,21 +205,24 @@ func (s *Server) AnnounceSelf(self string) {
 func (s *Server) Initialized() <-chan struct{} { return s.mcp.Initialized() }
 
 // formatInbound renders the single-line channel content from one inbound
-// delivery. Shape: `📨 peerbus [<kind>] from <from>: "<decoded body>"`. The
-// format is flat by design — Claude Code's renderer collapses embedded
-// newlines into spaces and then truncates with an ellipsis, so a multi-line
-// banner is wasted vertical space (observed live in 2-session test). The
-// "kind" token is "msg" for direct messages and "broadcast" for fan-outs
-// (defaults to "msg" if unset for safety — an older sender that pre-dates
-// the kind field still renders cleanly). The decoded body is wrapped in
-// literal ASCII double-quotes; any `"` inside the body is left as-is
-// (readability over correctness for a banner string).
+// delivery. Shape: `📨 <kind> from <from>: "<decoded body>"`. The format is
+// flat by design — Claude Code's renderer collapses embedded newlines into
+// spaces and then truncates with an ellipsis, so a multi-line banner is
+// wasted vertical space (observed live in 2-session test). Claude Code's
+// UI also prefixes the notification with the MCP server name (rendered as
+// `peerbus: <content>`), so the word "peerbus" inside the body would be
+// duplicated noise — it is omitted. The "kind" token is "msg" for direct
+// messages and "broadcast" for fan-outs (defaults to "msg" if unset for
+// safety — an older sender that pre-dates the kind field still renders
+// cleanly). The decoded body is wrapped in literal ASCII double-quotes;
+// any `"` inside the body is left as-is (readability over correctness for
+// a banner string).
 func formatInbound(in Inbound) string {
 	kind := in.Kind
 	if kind == "" {
 		kind = "msg"
 	}
-	return fmt.Sprintf("\U0001F4E8 peerbus [%s] from %s: \"%s\"", kind, in.From, decodeBody(in.Body))
+	return fmt.Sprintf("\U0001F4E8 %s from %s: \"%s\"", kind, in.From, decodeBody(in.Body))
 }
 
 // decodeBody renders an opaque body for the pretty channel content. Rules,
