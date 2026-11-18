@@ -64,9 +64,8 @@ Solid edges are immediate WS delivery; the dotted edge to the generic adapter is
 The broker is operated as a managed service. The shipped compose manifest runs **only the broker** (never a per-session process):
 
 ```sh
-# Provision the bearer token(s) and HMAC secret out-of-band, then:
+# Provision the bearer token(s) out-of-band, then:
 PEERBUS_TOKENS=<token> \
-PEERBUS_HMAC_SECRET=<shared-secret> \
 docker compose -f deploy/compose.yml up -d
 ```
 
@@ -76,14 +75,15 @@ Broker configuration (struct defaults, overridden by env):
 | --------------------- | --------------------------------------------------------------- |
 | `PEERBUS_LISTEN`      | WS server bind address (`host:port`, default `127.0.0.1:47821`). |
 | `PEERBUS_TOKENS`      | Comma-separated accepted static bearer tokens (at least one).   |
-| `PEERBUS_HMAC_SECRET` | Shared end-to-end HMAC-SHA256 secret (min 32 bytes enforced).   |
 | `PEERBUS_DB`          | Durable SQLite store path (default `peerbus.db`).               |
+
+The broker never takes the end-to-end HMAC secret: only the adapters sign and verify messages, so a broker host cannot forge one. `peerbus serve` warns if `PEERBUS_HMAC_SECRET` is set in its environment.
 
 Running directly instead of compose (or from a [release](https://github.com/nnemirovsky/peerbus/releases) binary):
 
 ```sh
 go build -o peerbus ./cmd/peerbus
-PEERBUS_TOKENS=... PEERBUS_HMAC_SECRET=... ./peerbus serve
+PEERBUS_TOKENS=... ./peerbus serve
 ./peerbus audit verify   # walk the blake3 audit chain
 ```
 

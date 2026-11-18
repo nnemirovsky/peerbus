@@ -25,10 +25,10 @@
 # for the SQLite DB so the durable queue and audit chain persist across
 # restarts, and all secrets injected out-of-band via the environment.
 #
-# Provision PEERBUS_TOKENS and PEERBUS_HMAC_SECRET out-of-band (a real secret
-# store / .env not committed to git). The HMAC secret must satisfy the
-# broker's minimum length or it refuses to start (see internal/broker/config.go
-# and internal/hmac.MinSecretLen). PEERBUS_TOKENS is a comma-separated list.
+# Provision PEERBUS_TOKENS out-of-band (a real secret store / .env not
+# committed to git). PEERBUS_TOKENS is a comma-separated list. Do NOT give the
+# broker PEERBUS_HMAC_SECRET: only the adapters sign and verify messages, and a
+# broker host without the secret cannot forge one.
 #
 # Validate locally with: make deploy-validate
 #   (runs `docker compose -f deploy/compose.yml config -q`).
@@ -62,9 +62,6 @@ services:
       # Comma-separated static bearer tokens. Provide via .env / secret store,
       # NOT inline. At least one token is required or the broker won't start.
       PEERBUS_TOKENS: "${PEERBUS_TOKENS:?set PEERBUS_TOKENS out-of-band}"
-      # Shared end-to-end HMAC-SHA256 secret distributed to peers out-of-band.
-      # Must meet internal/hmac.MinSecretLen or the broker refuses to start.
-      PEERBUS_HMAC_SECRET: "${PEERBUS_HMAC_SECRET:?set PEERBUS_HMAC_SECRET out-of-band}"
       # Durable SQLite store path INSIDE the container — must live on the
       # named volume below so the queue + audit chain survive restarts.
       PEERBUS_DB: "/data/peerbus.db"
@@ -74,7 +71,7 @@ services:
       - peerbus-data:/data
     # No healthcheck command: the distroless image ships no shell/nc, and the
     # broker exposes no health subcommand. `restart: always` plus the broker's
-    # own crash-on-misconfig (missing token / short HMAC secret exits non-zero)
+    # own crash-on-misconfig (a missing token exits non-zero)
     # is the supervision contract. Add an external WS probe if your platform
     # needs liveness signals.
 

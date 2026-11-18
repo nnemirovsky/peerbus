@@ -1,16 +1,8 @@
 package broker
 
 import (
-	"strings"
 	"testing"
-
-	bhmac "github.com/nnemirovsky/peerbus/internal/hmac"
 )
-
-// validSecret is a non-secret 32-byte fixture matching the hmac minimum.
-func validSecret() []byte {
-	return []byte(strings.Repeat("config-test-", 4)[:bhmac.MinSecretLen])
-}
 
 // TestDefaultListenAddr documents the broker's default listen address. The
 // constant is part of the operator contract (README + deploy manifest) so a
@@ -29,12 +21,10 @@ func TestLoadConfig_DefaultListenAddrApplied(t *testing.T) {
 	// Defensively unset env that LoadConfig would honour.
 	t.Setenv("PEERBUS_LISTEN", "")
 	t.Setenv("PEERBUS_TOKENS", "")
-	t.Setenv("PEERBUS_HMAC_SECRET", "")
 	t.Setenv("PEERBUS_DB", "")
 
 	cfg, err := LoadConfig(Config{
-		Tokens:     []string{"tok"},
-		HMACSecret: validSecret(),
+		Tokens: []string{"tok"},
 	})
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -50,13 +40,11 @@ func TestLoadConfig_DefaultListenAddrApplied(t *testing.T) {
 func TestLoadConfig_EnvListenOverride(t *testing.T) {
 	t.Setenv("PEERBUS_LISTEN", "0.0.0.0:9001")
 	t.Setenv("PEERBUS_TOKENS", "")
-	t.Setenv("PEERBUS_HMAC_SECRET", "")
 	t.Setenv("PEERBUS_DB", "")
 
 	cfg, err := LoadConfig(Config{
 		ListenAddr: "127.0.0.1:1234",
 		Tokens:     []string{"tok"},
-		HMACSecret: validSecret(),
 	})
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
