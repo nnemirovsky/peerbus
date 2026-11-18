@@ -21,7 +21,6 @@ import (
 // the brokerServe config-error branch.
 func TestBrokerServeRejectsMissingToken(t *testing.T) {
 	t.Setenv(broker.EnvTokens, "")
-	t.Setenv(broker.EnvHMACSecret, strings.Repeat("x", bhmac.MinSecretLen))
 	t.Setenv(broker.EnvDBPath, ":memory:")
 
 	var out, errb bytes.Buffer
@@ -33,19 +32,18 @@ func TestBrokerServeRejectsMissingToken(t *testing.T) {
 	}
 }
 
-// TestBrokerServeRejectsShortHMACSecret: a short/missing HMAC secret is
-// rejected (the broker will not start with a weak end-to-end key).
-func TestBrokerServeRejectsShortHMACSecret(t *testing.T) {
-	t.Setenv(broker.EnvTokens, "tok")
-	t.Setenv(broker.EnvHMACSecret, "too-short")
-	t.Setenv(broker.EnvDBPath, ":memory:")
-
-	var out, errb bytes.Buffer
-	if code := dispatch([]string{"serve"}, &out, &errb); code != 2 {
-		t.Fatalf("serve with short HMAC secret exit %d, want 2 (stderr=%q)", code, errb.String())
+// TestBrokerSecretWarning: the broker never needs the end-to-end HMAC secret,
+// so having it in the broker's environment draws a warning and an empty one
+// does not.
+func TestBrokerSecretWarning(t *testing.T) {
+	env := map[string]string{}
+	getenv := func(k string) string { return env[k] }
+	if w := brokerSecretWarning(getenv); w != "" {
+		t.Fatalf("warning without the secret set: %q", w)
 	}
-	if !strings.Contains(errb.String(), "secret must be at least") {
-		t.Fatalf("stderr = %q, want short-secret message", errb.String())
+	env[broker.EnvHMACSecret] = strings.Repeat("x", bhmac.MinSecretLen)
+	if w := brokerSecretWarning(getenv); !strings.Contains(w, broker.EnvHMACSecret) || !strings.Contains(w, "does not use it") {
+		t.Fatalf("warning = %q, want one naming %s", w, broker.EnvHMACSecret)
 	}
 }
 

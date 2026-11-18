@@ -71,7 +71,7 @@ release:
 deploy-validate:
 	@if command -v docker >/dev/null 2>&1; then \
 		echo "docker compose -f deploy/compose.yml config -q"; \
-		PEERBUS_TOKENS=validate PEERBUS_HMAC_SECRET=validate-only-not-a-real-secret \
+		PEERBUS_TOKENS=validate \
 			docker compose -f deploy/compose.yml config -q; \
 	else \
 		echo "docker not found; skipping compose validation (deploy-validate requires docker)"; \

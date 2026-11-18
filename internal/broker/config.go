@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
-	bhmac "github.com/nnemirovsky/peerbus/internal/hmac"
 )
 
 // Config holds the broker's runtime configuration.
@@ -26,9 +24,6 @@ type Config struct {
 	// Tokens is the set of accepted static bearer tokens. A peer name is
 	// bindable only under one of these.
 	Tokens []string
-	// HMACSecret is the shared end-to-end HMAC-SHA256 secret distributed to
-	// peers out-of-band. It is validated against hmac.MinSecretLen.
-	HMACSecret []byte
 	// DBPath is the durable SQLite store path (":memory:" for ephemeral).
 	DBPath string
 }
@@ -37,6 +32,9 @@ type Config struct {
 const (
 	EnvListenAddr = "PEERBUS_LISTEN"
 	EnvTokens     = "PEERBUS_TOKENS"
+	// EnvHMACSecret is the adapters' end-to-end signing secret. The broker
+	// never reads it: messages are signed and verified only by the peers, so
+	// a broker host that does not hold the secret cannot forge one.
 	EnvHMACSecret = "PEERBUS_HMAC_SECRET"
 	EnvDBPath     = "PEERBUS_DB"
 )
@@ -65,10 +63,9 @@ func parseTokens(s string) []string {
 
 // LoadConfig returns the effective configuration: it starts from base and lets
 // any set, non-empty PEERBUS_* environment variable override the matching
-// field (env-overrides-struct precedence — see Config). The HMAC secret is
-// validated against hmac.MinSecretLen; a missing or short secret is an error
-// (the broker refuses to start with a weak end-to-end key). At least one
-// bearer token is required.
+// field (env-overrides-struct precedence — see Config). At least one bearer
+// token is required. The end-to-end HMAC secret is not part of the broker's
+// configuration: only the adapters sign and verify envelopes.
 func LoadConfig(base Config) (Config, error) {
 	cfg := base
 
@@ -77,9 +74,6 @@ func LoadConfig(base Config) (Config, error) {
 	}
 	if v := os.Getenv(EnvTokens); v != "" {
 		cfg.Tokens = parseTokens(v)
-	}
-	if v := os.Getenv(EnvHMACSecret); v != "" {
-		cfg.HMACSecret = []byte(v)
 	}
 	if v := os.Getenv(EnvDBPath); v != "" {
 		cfg.DBPath = v
@@ -93,9 +87,6 @@ func LoadConfig(base Config) (Config, error) {
 	}
 	if len(cfg.Tokens) == 0 {
 		return Config{}, fmt.Errorf("broker config: at least one bearer token is required")
-	}
-	if len(cfg.HMACSecret) < bhmac.MinSecretLen {
-		return Config{}, fmt.Errorf("broker config: %w", bhmac.ErrShortSecret)
 	}
 	return cfg, nil
 }

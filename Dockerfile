@@ -41,14 +41,13 @@ VOLUME ["/data"]
 #                        0.0.0.0:47821 in a container so the published port
 #                        reaches it)
 #   PEERBUS_TOKENS       comma-separated static bearer tokens (>=1 required)
-#   PEERBUS_HMAC_SECRET  shared end-to-end HMAC-SHA256 secret (min length
-#                        enforced; broker refuses to start otherwise)
+#   (no PEERBUS_HMAC_SECRET: the broker never needs the end-to-end secret)
 #   PEERBUS_DB           durable SQLite path (point at /data)
 # Default WS port. Keep in sync with PEERBUS_LISTEN.
 EXPOSE 47821
 # No HEALTHCHECK: the broker exposes no health endpoint/subcommand and the
 # distroless image ships no shell or probe tooling. `restart: always` plus
-# the broker's crash-on-misconfig (missing token / short HMAC secret exits
+# the broker's crash-on-misconfig (a missing token exits
 # non-zero) is the supervision contract. Add an external WS probe if your
 # platform needs a liveness signal.
 ENTRYPOINT ["/usr/local/bin/peerbus"]

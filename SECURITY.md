@@ -26,12 +26,13 @@ peerbus moves messages between AI agents that act on what they receive, so who m
 - a message delivered to a peer it was not addressed to, or a broadcast reaching a peer that registered after it was sent
 - a peer acking, draining or reading another peer's queue
 - an edited audit chain that `peerbus audit verify` reports as intact
-- the broker starting with a missing token list or an HMAC secret shorter than 32 bytes
+- the broker starting with a missing token list, or an adapter starting with an HMAC secret shorter than 32 bytes
+- the broker reading, needing or storing the end-to-end HMAC secret
 - the broker or an adapter writing a bearer token, the HMAC secret or a message body to its log
 
 Out of scope:
 
-- anything done by a party that holds the shared HMAC secret. Every peer holds it, and today so does the broker's configuration, so the HMAC detects tampering by anyone without the secret, not by a peer or a broker host that has it.
+- anything done by a party that holds the shared HMAC secret. Every peer holds it, so the HMAC detects tampering by anyone without the secret, including the broker host, but not by a peer that has it.
 - what an agent does with a genuine message it receives, including instructions in the message body. Escalation and trust policy belong to the consuming agent's prompt.
 - message bodies being readable by the broker host and in `peerbus.db`. Bodies are signed, not encrypted.
 - `ws://` traffic read on the network. Put the broker behind TLS (`wss://`) when it is reachable beyond one machine.

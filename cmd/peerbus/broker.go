@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -33,7 +34,7 @@ func brokerServe(args []string, stdout, stderr io.Writer) int {
 	dbPath := fs.String("db", defaultDBPath, "path to the durable SQLite store")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "usage: peerbus serve [flags]\n\n")
-		_, _ = fmt.Fprintf(stderr, "config loaded from PEERBUS_* env (LISTEN, TOKENS, HMAC_SECRET, DB)\n\n")
+		_, _ = fmt.Fprintf(stderr, "config loaded from PEERBUS_* env (LISTEN, TOKENS, DB)\n\n")
 		_, _ = fmt.Fprintf(stderr, "flags:\n")
 		fs.PrintDefaults()
 	}
@@ -49,6 +50,9 @@ func brokerServe(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "peerbus: %v\n", err)
 		return 2
+	}
+	if w := brokerSecretWarning(os.Getenv); w != "" {
+		_, _ = fmt.Fprintln(stderr, w)
 	}
 
 	st, err := store.Open(cfg.DBPath)
@@ -120,4 +124,16 @@ func brokerAuditVerify(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintln(stdout, "audit chain OK")
 	return 0
+}
+
+// brokerSecretWarning returns a warning when the end-to-end HMAC secret is in
+// the broker's environment. The broker never uses it, and a broker host that
+// holds it could sign messages as any peer, which is what end-to-end HMAC is
+// meant to rule out.
+func brokerSecretWarning(getenv func(string) string) string {
+	if getenv(broker.EnvHMACSecret) == "" {
+		return ""
+	}
+	return "peerbus: warning: " + broker.EnvHMACSecret + " is set, but the broker does not use it. " +
+		"Remove it from the broker's environment so the broker host cannot sign messages; only the adapters need it."
 }
