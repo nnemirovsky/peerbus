@@ -269,18 +269,18 @@ func TestServer_TakeoverRaceMessageNotLost(t *testing.T) {
 
 func TestLoadConfig_EnvOverridesAndValidation(t *testing.T) {
 	// Missing token => error.
-	if _, err := LoadConfig(Config{HMACSecret: []byte(testSecret)}); err == nil {
+	if _, err := LoadConfig(Config{}); err == nil {
 		t.Fatalf("expected error when no tokens configured")
 	}
-	// Short HMAC secret => error.
-	if _, err := LoadConfig(Config{Tokens: []string{"t"}, HMACSecret: []byte("short")}); err == nil {
-		t.Fatalf("expected error for short HMAC secret")
+	// No HMAC secret needed: only the adapters sign and verify.
+	t.Setenv(EnvHMACSecret, "")
+	if _, err := LoadConfig(Config{Tokens: []string{"t"}}); err != nil {
+		t.Fatalf("LoadConfig without an HMAC secret: %v", err)
 	}
 
 	// Env overrides struct fields.
 	t.Setenv(EnvListenAddr, "1.2.3.4:9999")
 	t.Setenv(EnvTokens, "a, b ,c")
-	t.Setenv(EnvHMACSecret, testSecret)
 	t.Setenv(EnvDBPath, "/tmp/x.db")
 	cfg, err := LoadConfig(Config{ListenAddr: "ignored:1", Tokens: []string{"old"}})
 	if err != nil {

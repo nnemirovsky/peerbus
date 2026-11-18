@@ -23,14 +23,14 @@
 #
 # Install: place this file at /etc/s6/peerbus-broker/run (chmod +x), with the
 # secrets sourced from an out-of-band env file (NOT committed). PEERBUS_TOKENS
-# is comma-separated; PEERBUS_HMAC_SECRET must meet the broker's minimum
-# length or the broker exits non-zero and s6 keeps restarting it (intended:
-# misconfiguration is loud, not silent).
+# is comma-separated; without a token the broker exits non-zero and s6 keeps
+# restarting it (intended: misconfiguration is loud, not silent). Do not give
+# the broker PEERBUS_HMAC_SECRET: only the adapters need it.
 
 set -e
 
 # Source secrets out-of-band. Provision this file via your secret store.
-# It must export PEERBUS_TOKENS and PEERBUS_HMAC_SECRET.
+# It must export PEERBUS_TOKENS.
 if [ -r /etc/peerbus/broker.env ]; then
     # shellcheck disable=SC1091
     . /etc/peerbus/broker.env
@@ -44,8 +44,8 @@ export PEERBUS_LISTEN="${PEERBUS_LISTEN:-0.0.0.0:47821}"
 # at-least-once + audit guarantee). Match the path to your volume mount.
 export PEERBUS_DB="${PEERBUS_DB:-/var/lib/peerbus/peerbus.db}"
 
-# PEERBUS_TOKENS and PEERBUS_HMAC_SECRET come from the env file above; the
-# broker refuses to start (non-zero exit) if a token is missing or the HMAC
-# secret is too short — s6 will keep restarting until it is fixed.
+# PEERBUS_TOKENS comes from the env file above; the broker refuses to start
+# (non-zero exit) if a token is missing — s6 will keep restarting until it is
+# fixed.
 
 exec peerbus serve

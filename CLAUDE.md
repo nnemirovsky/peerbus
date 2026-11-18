@@ -63,16 +63,16 @@ toolchain required.
 Broker:
 
 ```sh
-PEERBUS_LISTEN=0.0.0.0:47821 PEERBUS_TOKENS=t1,t2 PEERBUS_HMAC_SECRET=... \
-  ./peerbus serve
+PEERBUS_LISTEN=0.0.0.0:47821 PEERBUS_TOKENS=t1,t2 ./peerbus serve
 ./peerbus audit verify [--db PATH]   # walks the blake3 chain
 ```
 
 `serve` config loads from env: `PEERBUS_LISTEN` (default `127.0.0.1:47821`),
-`PEERBUS_TOKENS` (comma-separated, ≥1 required), `PEERBUS_HMAC_SECRET`
-(≥ `hmac.MinSecretLen` = 32 bytes), `PEERBUS_DB` (default `peerbus.db`; the
-`--db` flag sets the base, env overrides). Missing tokens or a short secret
-is a fatal config error.
+`PEERBUS_TOKENS` (comma-separated, ≥1 required), `PEERBUS_DB` (default
+`peerbus.db`; the `--db` flag sets the base, env overrides). Missing tokens is
+a fatal config error. The broker never reads `PEERBUS_HMAC_SECRET` (only the
+adapters sign and verify, so a broker host cannot forge a message); `serve`
+warns when it is set.
 
 Adapter:
 
