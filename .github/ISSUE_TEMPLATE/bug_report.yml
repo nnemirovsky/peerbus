@@ -1,0 +1,37 @@
+name: Bug report
+description: Something did not work, or an error message was not clear enough
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste tokens, passwords or personal data.** Redact anything private. An unclear error message is a valid bug too.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps and output
+      description: What you ran or did, plus the exact error or output.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version you are running.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, and anything else relevant (Claude Code version, runtime version).
+    validations:
+      required: true
