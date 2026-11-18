@@ -4,7 +4,7 @@ peerbus runs on machines you control: one broker you operate and an adapter next
 
 ## What it reads
 
-- **Broker:** its settings from `PEERBUS_LISTEN`, `PEERBUS_TOKENS`, `PEERBUS_HMAC_SECRET` and `PEERBUS_DB`, and the frames adapters send it.
+- **Broker:** its settings from `PEERBUS_LISTEN`, `PEERBUS_TOKENS` and `PEERBUS_DB`, and the frames adapters send it. It never reads the HMAC secret.
 - **Adapters:** their settings from `PEERBUS_URL`, `PEERBUS_NAME`, `PEERBUS_TOKEN` and `PEERBUS_HMAC_SECRET`, the arguments of the `bus.*` tools the agent calls, and the messages the broker delivers.
 
 ## What it writes
