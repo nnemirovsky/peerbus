@@ -4,8 +4,8 @@ go 1.26.0
 
 require (
 	github.com/coder/websocket v1.8.15
-	lukechampine.com/blake3 v1.4.1
-	modernc.org/sqlite v1.62.0
+	lukechampine.com/blake3 v1.5.1
+	modernc.org/sqlite v1.63.0
 )
 
 require (
